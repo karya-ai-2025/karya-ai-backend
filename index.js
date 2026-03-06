@@ -22,6 +22,7 @@ const profileRoutes = require('./routes/profileRoutes');
 const onboardingRoutes = require('./routes/onboardingRoutes');
 const expertOnboardingRoutes=require('./routes/Expertonboardingroutes')
 const marketplaceRoutes=require('./routes/Marketplaceroutes')
+const projectRoutes = require('./routes/projectRoutes');
 
 // Validate environment variables
 validateConfig();
@@ -83,9 +84,9 @@ app.use('/api/profiles', profileRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/expert-onboarding',expertOnboardingRoutes)
 app.use('/api/marketplace',marketplaceRoutes)
+app.use('/api/projects', projectRoutes);
 
 // Future routes (placeholders)
-// app.use('/api/projects', projectRoutes);
 // app.use('/api/leads', leadRoutes);
 // app.use('/api/messages', messageRoutes);
 

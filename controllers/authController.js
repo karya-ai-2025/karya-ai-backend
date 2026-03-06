@@ -21,14 +21,14 @@ const { AppError, asyncHandler } = require('../middleware/errorHandler');
  */
 const register = asyncHandler(async (req, res, next) => {
   const { fullName, email, password, role, company, phone } = req.body;
-  
+
   // Check if user already exists
   const existingUser = await User.findOne({ email: email.toLowerCase() });
-  
+
   if (existingUser) {
     return next(new AppError('An account with this email already exists', 400));
   }
-  
+
   // Create user
   const user = await User.create({
     fullName,
@@ -37,7 +37,7 @@ const register = asyncHandler(async (req, res, next) => {
     phone,
     activeRole: role || 'owner'
   });
-  
+
   // Create initial profile based on role
   if (role === 'expert') {
     const expertProfile = await ExpertProfile.create({
@@ -46,7 +46,7 @@ const register = asyncHandler(async (req, res, next) => {
         joinedAsExpert: new Date()
       }
     });
-    
+
     user.profiles.expert = expertProfile._id;
     user.hasExpertProfile = true;
   } else {
@@ -57,18 +57,18 @@ const register = asyncHandler(async (req, res, next) => {
         name: company || `${fullName}'s Company`
       }
     });
-    
+
     user.profiles.owner = businessProfile._id;
     user.hasOwnerProfile = true;
   }
-  
+
   // Generate email verification token
   const verificationToken = user.generateEmailVerificationToken();
   await user.save({ validateBeforeSave: false });
-  
+
   // Create verification URL
   const verificationUrl = `${config.frontendUrl}/verify-email/${verificationToken}`;
-  
+
   // Send verification email
   try {
     await sendEmail({
@@ -79,13 +79,13 @@ const register = asyncHandler(async (req, res, next) => {
   } catch (error) {
     console.error('Failed to send verification email:', error);
   }
-  
+
   // Populate profiles before sending response
   await user.populate([
     { path: 'profiles.owner', select: 'company' },
     { path: 'profiles.expert', select: 'headline primaryCategory' }
   ]);
-  
+
   // Send response with token
   sendTokenResponse(user, 201, res, 'Registration successful! Please check your email to verify your account.');
 });
@@ -101,10 +101,11 @@ const register = asyncHandler(async (req, res, next) => {
  */
 const login = asyncHandler(async (req, res, next) => {
   const { email, password, role } = req.body;
-  
+  console.log(email, password, role);
+
   // Find user and verify credentials
   const user = await User.findByCredentials(email.toLowerCase(), password);
-  
+
   // If specific role requested, check if user has that profile
   if (role) {
     if (role === 'owner' && !user.hasOwnerProfile) {
@@ -113,18 +114,18 @@ const login = asyncHandler(async (req, res, next) => {
     if (role === 'expert' && !user.hasExpertProfile) {
       return next(new AppError('You don\'t have an Expert profile. Would you like to create one?', 400));
     }
-    
+
     // Set active role to requested role
     user.activeRole = role;
     await user.save({ validateBeforeSave: false });
   }
-  
+
   // Populate profiles
   await user.populate([
     { path: 'profiles.owner', select: 'company subscription' },
     { path: 'profiles.expert', select: 'headline primaryCategory availability ratings' }
   ]);
-  
+
   // Send response with token
   sendTokenResponse(user, 200, res, 'Login successful');
 });
@@ -140,7 +141,7 @@ const login = asyncHandler(async (req, res, next) => {
  */
 const logout = asyncHandler(async (req, res, next) => {
   clearTokenCookie(res);
-  
+
   res.status(200).json({
     success: true,
     message: 'Logged out successfully'
@@ -161,12 +162,12 @@ const getMe = asyncHandler(async (req, res, next) => {
     { path: 'profiles.owner' },
     { path: 'profiles.expert' }
   ]);
-  
+
   // Get active profile data
-  const activeProfile = user.activeRole === 'expert' 
-    ? user.profiles.expert 
+  const activeProfile = user.activeRole === 'expert'
+    ? user.profiles.expert
     : user.profiles.owner;
-  
+
   res.status(200).json({
     success: true,
     user,
@@ -187,32 +188,32 @@ const getMe = asyncHandler(async (req, res, next) => {
  */
 const switchRole = asyncHandler(async (req, res, next) => {
   const { role } = req.body;
-  
+
   if (!['owner', 'expert'].includes(role)) {
     return next(new AppError('Invalid role. Must be owner or expert', 400));
   }
-  
+
   const user = await User.findById(req.user._id);
-  
+
   // Check if user has the profile for requested role
   if (role === 'owner' && !user.hasOwnerProfile) {
     return next(new AppError('You need to create a Business profile first', 400));
   }
-  
+
   if (role === 'expert' && !user.hasExpertProfile) {
     return next(new AppError('You need to create an Expert profile first', 400));
   }
-  
+
   // Switch role
   user.activeRole = role;
   await user.save({ validateBeforeSave: false });
-  
+
   // Populate and return
   await user.populate([
     { path: 'profiles.owner' },
     { path: 'profiles.expert' }
   ]);
-  
+
   // Generate new token with updated role
   sendTokenResponse(user, 200, res, `Switched to ${role} profile`);
 });
@@ -228,18 +229,18 @@ const switchRole = asyncHandler(async (req, res, next) => {
  */
 const createProfile = asyncHandler(async (req, res, next) => {
   const { profileType, profileData } = req.body;
-  
+
   if (!['owner', 'expert'].includes(profileType)) {
     return next(new AppError('Invalid profile type. Must be owner or expert', 400));
   }
-  
+
   const user = await User.findById(req.user._id);
-  
+
   if (profileType === 'owner') {
     if (user.hasOwnerProfile) {
       return next(new AppError('You already have a Business profile', 400));
     }
-    
+
     // Create business profile
     const businessProfile = await BusinessProfile.create({
       user: user._id,
@@ -249,15 +250,15 @@ const createProfile = asyncHandler(async (req, res, next) => {
       industry: profileData?.industry,
       companySize: profileData?.companySize
     });
-    
+
     user.profiles.owner = businessProfile._id;
     user.hasOwnerProfile = true;
-    
+
   } else if (profileType === 'expert') {
     if (user.hasExpertProfile) {
       return next(new AppError('You already have an Expert profile', 400));
     }
-    
+
     // Create expert profile
     const expertProfile = await ExpertProfile.create({
       user: user._id,
@@ -268,19 +269,19 @@ const createProfile = asyncHandler(async (req, res, next) => {
         joinedAsExpert: new Date()
       }
     });
-    
+
     user.profiles.expert = expertProfile._id;
     user.hasExpertProfile = true;
   }
-  
+
   await user.save({ validateBeforeSave: false });
-  
+
   // Populate and return
   await user.populate([
     { path: 'profiles.owner' },
     { path: 'profiles.expert' }
   ]);
-  
+
   res.status(201).json({
     success: true,
     message: `${profileType === 'owner' ? 'Business' : 'Expert'} profile created successfully`,
@@ -299,9 +300,9 @@ const createProfile = asyncHandler(async (req, res, next) => {
  */
 const forgotPassword = asyncHandler(async (req, res, next) => {
   const { email } = req.body;
-  
+
   const user = await User.findOne({ email: email.toLowerCase() });
-  
+
   // Always return success to prevent email enumeration
   if (!user) {
     return res.status(200).json({
@@ -309,21 +310,21 @@ const forgotPassword = asyncHandler(async (req, res, next) => {
       message: 'If an account with that email exists, a password reset link has been sent.'
     });
   }
-  
+
   // Generate reset token
   const resetToken = user.generatePasswordResetToken();
   await user.save({ validateBeforeSave: false });
-  
+
   // Create reset URL
   const resetUrl = `${config.frontendUrl}/reset-password/${resetToken}`;
-  
+
   try {
     await sendEmail({
       to: user.email,
       subject: 'Password Reset Request - Karya-AI',
       html: templates.passwordReset(user.fullName, resetUrl)
     });
-    
+
     res.status(200).json({
       success: true,
       message: 'If an account with that email exists, a password reset link has been sent.'
@@ -332,7 +333,7 @@ const forgotPassword = asyncHandler(async (req, res, next) => {
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save({ validateBeforeSave: false });
-    
+
     return next(new AppError('Failed to send reset email. Please try again later.', 500));
   }
 });
@@ -349,29 +350,29 @@ const forgotPassword = asyncHandler(async (req, res, next) => {
 const resetPassword = asyncHandler(async (req, res, next) => {
   const { password } = req.body;
   const { token } = req.params;
-  
+
   // Hash the token from URL
   const hashedToken = crypto
     .createHash('sha256')
     .update(token)
     .digest('hex');
-  
+
   // Find user with valid reset token
   const user = await User.findOne({
     passwordResetToken: hashedToken,
     passwordResetExpires: { $gt: Date.now() }
   });
-  
+
   if (!user) {
     return next(new AppError('Invalid or expired reset token', 400));
   }
-  
+
   // Update password
   user.password = password;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
   await user.save();
-  
+
   // Send confirmation email
   try {
     await sendEmail({
@@ -382,7 +383,7 @@ const resetPassword = asyncHandler(async (req, res, next) => {
   } catch (error) {
     console.error('Failed to send password change confirmation:', error);
   }
-  
+
   sendTokenResponse(user, 200, res, 'Password reset successful');
 });
 
@@ -397,18 +398,18 @@ const resetPassword = asyncHandler(async (req, res, next) => {
  */
 const changePassword = asyncHandler(async (req, res, next) => {
   const { currentPassword, newPassword } = req.body;
-  
+
   const user = await User.findById(req.user._id).select('+password');
-  
+
   const isMatch = await user.comparePassword(currentPassword);
-  
+
   if (!isMatch) {
     return next(new AppError('Current password is incorrect', 401));
   }
-  
+
   user.password = newPassword;
   await user.save();
-  
+
   try {
     await sendEmail({
       to: user.email,
@@ -418,7 +419,7 @@ const changePassword = asyncHandler(async (req, res, next) => {
   } catch (error) {
     console.error('Failed to send password change confirmation:', error);
   }
-  
+
   sendTokenResponse(user, 200, res, 'Password changed successfully');
 });
 
@@ -433,26 +434,26 @@ const changePassword = asyncHandler(async (req, res, next) => {
  */
 const verifyEmail = asyncHandler(async (req, res, next) => {
   const { token } = req.params;
-  
+
   const hashedToken = crypto
     .createHash('sha256')
     .update(token)
     .digest('hex');
-  
+
   const user = await User.findOne({
     emailVerificationToken: hashedToken,
     emailVerificationExpires: { $gt: Date.now() }
   });
-  
+
   if (!user) {
     return next(new AppError('Invalid or expired verification token', 400));
   }
-  
+
   user.isEmailVerified = true;
   user.emailVerificationToken = undefined;
   user.emailVerificationExpires = undefined;
   await user.save({ validateBeforeSave: false });
-  
+
   try {
     await sendEmail({
       to: user.email,
@@ -462,7 +463,7 @@ const verifyEmail = asyncHandler(async (req, res, next) => {
   } catch (error) {
     console.error('Failed to send welcome email:', error);
   }
-  
+
   res.status(200).json({
     success: true,
     message: 'Email verified successfully'
@@ -480,35 +481,35 @@ const verifyEmail = asyncHandler(async (req, res, next) => {
  */
 const resendVerification = asyncHandler(async (req, res, next) => {
   const { email } = req.body;
-  
+
   const user = await User.findOne({ email: email.toLowerCase() });
-  
+
   if (!user) {
     return res.status(200).json({
       success: true,
       message: 'If an account with that email exists, a verification email has been sent.'
     });
   }
-  
+
   if (user.isEmailVerified) {
     return res.status(200).json({
       success: true,
       message: 'Email is already verified'
     });
   }
-  
+
   const verificationToken = user.generateEmailVerificationToken();
   await user.save({ validateBeforeSave: false });
-  
+
   const verificationUrl = `${config.frontendUrl}/verify-email/${verificationToken}`;
-  
+
   try {
     await sendEmail({
       to: user.email,
       subject: 'Verify your Karya-AI account',
       html: templates.emailVerification(user.fullName, verificationUrl)
     });
-    
+
     res.status(200).json({
       success: true,
       message: 'If an account with that email exists, a verification email has been sent.'
@@ -519,33 +520,73 @@ const resendVerification = asyncHandler(async (req, res, next) => {
 });
 
 // ============================================
-// UPDATE PROFILE (Core user data)
+// UPDATE PROFILE (Enhanced for both User and BusinessProfile)
 // ============================================
 
 /**
- * @desc    Update core user profile (name, phone, avatar)
+ * @desc    Update user profile (both User and BusinessProfile fields)
  * @route   PUT /api/auth/update-profile
  * @access  Private
  */
 const updateProfile = asyncHandler(async (req, res, next) => {
-  const allowedFields = ['fullName', 'phone', 'avatar', 'preferences'];
-  
-  const updates = {};
+  // User model allowed fields
+  const userAllowedFields = ['fullName', 'phone', 'avatar', 'preferences'];
+
+  // BusinessProfile allowed fields
+  const businessAllowedFields = [
+    'company.name', 'company.website', 'company.description', 'company.logo',
+    'industry', 'companySize', 'businessType',
+    'location.address', 'location.city', 'location.state', 'location.country', 'location.pincode'
+  ];
+
+  // Separate updates for User and BusinessProfile
+  const userUpdates = {};
+  const businessUpdates = {};
+
   Object.keys(req.body).forEach((key) => {
-    if (allowedFields.includes(key)) {
-      updates[key] = req.body[key];
+    if (userAllowedFields.includes(key)) {
+      userUpdates[key] = req.body[key];
+    } else if (businessAllowedFields.includes(key)) {
+      businessUpdates[key] = req.body[key];
+    } else if (key === 'companyName') {
+      // Handle companyName as company.name
+      businessUpdates['company.name'] = req.body[key];
+    } else if (key === 'companyWebsite') {
+      // Handle companyWebsite as company.website
+      businessUpdates['company.website'] = req.body[key];
+    } else if (key === 'companyDescription') {
+      // Handle companyDescription as company.description
+      businessUpdates['company.description'] = req.body[key];
     }
   });
-  
-  const user = await User.findByIdAndUpdate(
-    req.user._id,
-    updates,
-    { new: true, runValidators: true }
-  ).populate([
+
+  // Update User model if there are user updates
+  let user;
+  if (Object.keys(userUpdates).length > 0) {
+    user = await User.findByIdAndUpdate(
+      req.user._id,
+      userUpdates,
+      { new: true, runValidators: true }
+    );
+  } else {
+    user = await User.findById(req.user._id);
+  }
+
+  // Update BusinessProfile if user has owner profile and there are business updates
+  if (Object.keys(businessUpdates).length > 0 && user.hasOwnerProfile && user.profiles.owner) {
+    await BusinessProfile.findByIdAndUpdate(
+      user.profiles.owner,
+      businessUpdates,
+      { new: true, runValidators: true }
+    );
+  }
+
+  // Populate and return updated user with profiles
+  await user.populate([
     { path: 'profiles.owner' },
     { path: 'profiles.expert' }
   ]);
-  
+
   res.status(200).json({
     success: true,
     message: 'Profile updated successfully',
@@ -564,9 +605,9 @@ const updateProfile = asyncHandler(async (req, res, next) => {
  */
 const checkEmail = asyncHandler(async (req, res, next) => {
   const { email } = req.body;
-  
+
   const user = await User.findOne({ email: email.toLowerCase() });
-  
+
   res.status(200).json({
     success: true,
     exists: !!user
@@ -584,19 +625,19 @@ const checkEmail = asyncHandler(async (req, res, next) => {
  */
 const deactivateAccount = asyncHandler(async (req, res, next) => {
   const { password } = req.body;
-  
+
   const user = await User.findById(req.user._id).select('+password');
   const isMatch = await user.comparePassword(password);
-  
+
   if (!isMatch) {
     return next(new AppError('Password is incorrect', 401));
   }
-  
+
   user.isActive = false;
   await user.save({ validateBeforeSave: false });
-  
+
   clearTokenCookie(res);
-  
+
   res.status(200).json({
     success: true,
     message: 'Account deactivated successfully'
@@ -617,7 +658,7 @@ const getProfiles = asyncHandler(async (req, res, next) => {
     { path: 'profiles.owner' },
     { path: 'profiles.expert' }
   ]);
-  
+
   res.status(200).json({
     success: true,
     hasOwnerProfile: user.hasOwnerProfile,
