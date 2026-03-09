@@ -582,9 +582,15 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
     Object.assign(profile.socialLinks, links);
   }
   
+  // Mark profile as public and searchable on completion
+  if (!profile.profileStatus) profile.profileStatus = {};
+  profile.profileStatus.isPublic = true;
+  profile.profileStatus.isSearchable = true;
+  profile.profileStatus.lastActive = new Date();
+
   // Save profile
   await profile.save();
-  
+
   // Mark onboarding as complete
   if (!user.onboarding) {
     user.onboarding = { expert: { currentStep: 0, completed: false } };
@@ -595,7 +601,7 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
   user.onboarding.expert.currentStep = 4;
   user.onboarding.expert.completed = true;
   await user.save({ validateBeforeSave: false });
-  
+
   res.status(200).json({
     success: true,
     message: 'All expert onboarding data saved successfully',
