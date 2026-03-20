@@ -23,6 +23,9 @@ const onboardingRoutes = require('./routes/onboardingRoutes');
 const expertOnboardingRoutes=require('./routes/Expertonboardingroutes')
 const marketplaceRoutes=require('./routes/Marketplaceroutes')
 const projectRoutes = require('./routes/projectRoutes');
+const industriesRoutes = require('./routes/industriesRoutes'); // PostgreSQL industries
+const leadsRoutes = require('./routes/leadsRoutes'); // Lead generation routes
+const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 
 // Validate environment variables
 validateConfig();
@@ -68,14 +71,34 @@ app.use(cookieParser());
 // ROUTES
 // ============================================
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Karya-AI API is running',
-    environment: config.env,
-    timestamp: new Date().toISOString()
-  });
+// Import global Prisma client for health check
+const { testConnection } = require('./utils/prismaClient');
+
+// Health check with database status
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test PostgreSQL connection using global singleton client
+    const postgresStatus = await testConnection();
+
+    res.status(200).json({
+      success: true,
+      message: 'Karya-AI API is running - Dual Database Architecture',
+      environment: config.env,
+      timestamp: new Date().toISOString(),
+      databases: {
+        mongodb: 'connected', // Assume connected if server is running
+        postgresql: postgresStatus
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Health check failed',
+      environment: config.env,
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
 });
 
 // API Routes
@@ -85,9 +108,11 @@ app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/expert-onboarding',expertOnboardingRoutes)
 app.use('/api/marketplace',marketplaceRoutes)
 app.use('/api/projects', projectRoutes);
+app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
+app.use('/api/leads', leadsRoutes); // Lead generation and management
+app.use('/api', planRoutes); // Plan and pricing management
 
 // Future routes (placeholders)
-// app.use('/api/leads', leadRoutes);
 // app.use('/api/messages', messageRoutes);
 
 // ============================================
@@ -110,23 +135,34 @@ const startServer = async () => {
   try {
     // Connect to MongoDB
     await connectDB();
+
+    // Test PostgreSQL connection using global singleton client
+    await testConnection();
     
     // Start Express server
     const server = app.listen(PORT, () => {
       console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🚀 Karya-AI Backend Server                               ║
+║   🚀 Karya-AI Backend Server - Dual Database Architecture  ║
 ║                                                            ║
 ║   Environment: ${config.env.padEnd(42)}║
 ║   Port: ${PORT.toString().padEnd(49)}║
 ║   API URL: http://localhost:${PORT}/api                     ║
+║                                                            ║
+║   📊 Database Architecture:                                ║
+║   • MongoDB: User/Project Management (Mongoose)           ║
+║   • PostgreSQL: Products/Leads (Prisma Client)            ║
 ║                                                            ║
 ║   Available Endpoints:                                     ║
 ║   • Health Check: GET /api/health                          ║
 ║   • Auth: /api/auth/*                                      ║
 ║   • Profiles: /api/profiles/*                              ║
 ║   • Onboarding: /api/onboarding/*                          ║
+║   • Projects: /api/projects/*                              ║
+║   • Industries: GET /api/industries (PostgreSQL)          ║
+║   • Leads: /api/leads/* (Lead Generation)                  ║
+║   • Plans: /api/plans/* (Pricing & Subscriptions)         ║
 ║                                                            ║
 ║   Multi-Profile System:                                    ║
 ║   • Users can have both Owner & Expert profiles            ║
