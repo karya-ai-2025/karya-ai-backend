@@ -6,7 +6,6 @@ const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-require('dotenv').config();
 
 // Config
 const { config, validateConfig } = require('./config/config');
