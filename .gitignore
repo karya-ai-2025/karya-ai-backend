@@ -70,3 +70,4 @@ uploads/
 # MongoDB Dump (if any)
 # ===============================
 dump/
+/generated/prisma

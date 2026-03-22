@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model tbl_gtm_industry {
+  id            Int       @id @default(autoincrement())
+  industry_name String
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  updated_at    DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model tbl_healthcare {
+  id                      Int     @id @default(autoincrement())
+  salutation              String?
+  First_Name              String? @map("First Name")
+  Last_Name               String? @map("Last Name")
+  title                   String?
+  Account_Name            String? @map("Account Name")
+  Mailing_Street          String? @map("Mailing Street")
+  Mailing_City            String? @map("Mailing City")
+  Mailing_State_Province  String? @map("Mailing State/Province")
+  Mailing_Zip_Postal_Code String? @map("Mailing Zip/Postal Code")
+  Mailing_Country         String? @map("Mailing Country")
+  phone                   String?
+  fax                     String?
+  mobile                  String?
+  email                   String?
+  GTM_Industry            String? @map("GTM Industry")
+  GTM_Sector              String? @map("GTM Sector")
+  GTM_Sub_Industry        String? @map("GTM Sub-Industry")
+  employees               Int?
+  T_Shirt_Size            String? @map("T Shirt Size")
+  Account_Segment         String? @map("Account Segment")
+  Account_Sub_Segment     String? @map("Account Sub Segment")
+}
