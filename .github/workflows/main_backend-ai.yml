@@ -26,8 +26,13 @@ jobs:
       - name: npm install and generate Prisma client
         run: |
           npm install
+          echo "🔍 Checking DATABASE_URL..."
+          echo "DATABASE_URL is set: $([[ -n "$DATABASE_URL" ]] && echo "YES" || echo "NO")"
+          echo "🚀 Generating Prisma client..."
           npm run prisma:generate
-          ls -la node_modules/.prisma/ || echo "Prisma client directory not found"
+          echo "✅ Prisma generation complete, checking output..."
+          ls -la node_modules/.prisma/ || echo "❌ Prisma client directory not found"
+          ls -la node_modules/@prisma/client/ || echo "❌ @prisma/client directory not found"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
