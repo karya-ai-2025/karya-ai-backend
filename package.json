@@ -10,7 +10,7 @@
     "start": "node scripts/startup.js",
     "start:direct": "node index.js",
     "dev": "nodemon index.js",
-    "postinstall": "prisma generate",
+    "build": "prisma generate",
     "seed:projects": "node utils/seedProjects.js",
     "prisma:generate": "prisma generate",
     "prisma:pull": "prisma db pull",
