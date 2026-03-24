@@ -37,6 +37,7 @@ jobs:
           find node_modules/.prisma -type f | head -10 || echo "No .prisma files found"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: ${{ secrets.NODE_ENV }}
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
