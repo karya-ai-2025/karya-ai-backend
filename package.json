@@ -7,7 +7,6 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "start": "node scripts/startup.js",
     "start:direct": "node index.js",
     "dev": "nodemon index.js",
     "build": "prisma generate",
