@@ -2,43 +2,6 @@
 // ONE instance for the entire application - Production Safe
 // Usage: const { prisma } = require('../utils/prismaClient');
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-const generatedClientEntry = path.join(
-  __dirname,
-  '..',
-  'node_modules',
-  '.prisma',
-  'client',
-  'default.js'
-);
-
-function ensureGeneratedPrismaClient() {
-  if (fs.existsSync(generatedClientEntry)) {
-    return;
-  }
-
-  console.warn('Prisma generated client not found. Running prisma generate...');
-
-  try {
-    execSync('npx prisma generate', {
-      cwd: path.join(__dirname, '..'),
-      stdio: 'inherit',
-    });
-  } catch (error) {
-    console.error('Prisma client generation failed before initialization.');
-    throw error;
-  }
-
-  if (!fs.existsSync(generatedClientEntry)) {
-    throw new Error(`Prisma client is still missing after generation: ${generatedClientEntry}`);
-  }
-}
-
-ensureGeneratedPrismaClient();
-
 const { PrismaClient } = require('@prisma/client');
 
 // Singleton pattern - Only ONE instance across the entire app
