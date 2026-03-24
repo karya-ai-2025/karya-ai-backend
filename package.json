@@ -7,20 +7,28 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "start:direct": "node index.js",
+    "start": "node index.js",
     "dev": "nodemon index.js",
-    "build": "prisma generate",
+
+    "postinstall": "node node_modules/prisma/build/index.js generate",
+
+    "build": "echo 'build step'",
+
     "seed:projects": "node utils/seedProjects.js",
-    "prisma:generate": "prisma generate",
+
+    "prisma:generate": "node node_modules/prisma/build/index.js generate",
     "prisma:pull": "prisma db pull",
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
+
     "validate": "node utils/validateSetup.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "debug:prisma": "echo 'DATABASE_URL:' $DATABASE_URL && prisma generate --schema=prisma/schema.prisma && ls -la node_modules/.prisma/ || echo 'Failed'"
+
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
+    "prisma": "^6.19.2",
+
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -36,7 +44,6 @@
     "validator": "^13.15.26"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14",
-    "prisma": "^6.19.2"
+    "nodemon": "^3.1.14"
   }
 }
