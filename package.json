@@ -7,7 +7,8 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node scripts/startup.js",
+    "start:direct": "node index.js",
     "dev": "nodemon index.js",
     "postinstall": "prisma generate",
     "seed:projects": "node utils/seedProjects.js",
@@ -16,7 +17,8 @@
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
     "validate": "node utils/validateSetup.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "debug:prisma": "echo 'DATABASE_URL:' $DATABASE_URL && prisma generate --schema=prisma/schema.prisma && ls -la node_modules/.prisma/ || echo 'Failed'"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",

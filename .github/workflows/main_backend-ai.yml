@@ -33,6 +33,8 @@ jobs:
           echo "✅ Prisma generation complete, checking output..."
           ls -la node_modules/.prisma/ || echo "❌ Prisma client directory not found"
           ls -la node_modules/@prisma/client/ || echo "❌ @prisma/client directory not found"
+          echo "📦 Ensuring Prisma client is included in artifact..."
+          find node_modules/.prisma -type f | head -10 || echo "No .prisma files found"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
