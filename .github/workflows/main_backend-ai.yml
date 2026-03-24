@@ -27,6 +27,7 @@ jobs:
         run: |
           npm install
           npm run prisma:generate
+          ls -la node_modules/.prisma/ || echo "Prisma client directory not found"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
