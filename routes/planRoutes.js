@@ -15,11 +15,9 @@ router.get('/plans', getPlans);
 router.get('/plans-with-packages', getPlansWithPackages);
 router.get('/plans/:planId/packages', getPackagesByPlan);
 
-// Protected routes (auth required)
-router.use(protect); // Apply auth middleware to all routes below
-
-router.get('/user/current-plan', getCurrentUserPlan);
-router.get('/user/check-plan-access', checkUserPlanAccess);
-router.post('/user/upgrade-plan', createUserPlan);
+// Protected routes (auth required) — protect applied per-route, not globally
+router.get('/user/current-plan', protect, getCurrentUserPlan);
+router.get('/user/check-plan-access', protect, checkUserPlanAccess);
+router.post('/user/upgrade-plan', protect, createUserPlan);
 
 module.exports = router;
