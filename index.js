@@ -25,6 +25,7 @@ const projectRoutes = require('./routes/projectRoutes');
 const industriesRoutes = require('./routes/industriesRoutes'); // PostgreSQL industries
 const leadsRoutes = require('./routes/leadsRoutes'); // Lead generation routes
 const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
+const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 
 // Validate environment variables
 validateConfig();
@@ -109,6 +110,7 @@ app.use('/api/marketplace',marketplaceRoutes)
 app.use('/api/projects', projectRoutes);
 app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
+app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api', planRoutes); // Plan and pricing management
 
 // Future routes (placeholders)
