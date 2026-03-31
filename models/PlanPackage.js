@@ -36,6 +36,17 @@ const planPackageSchema = new mongoose.Schema(
       trim: true
     },
 
+    // Billing cycle information
+    billingCycle: {
+      type: String,
+      enum: {
+        values: ['monthly', 'quarterly', 'yearly', 'one-time'],
+        message: 'Billing cycle must be monthly, quarterly, yearly, or one-time'
+      },
+      default: 'monthly',
+      required: [true, 'Billing cycle is required']
+    },
+
     // Package status
     isActive: {
       type: Boolean,

@@ -2,6 +2,8 @@ const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const Project = require('../models/Project');
 const ProjectUser = require('../models/ProjectUser');
+const UserPlan = require('../models/UserPlan');
+const { incrementProjectCount } = require('../controllers/planController');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -236,6 +238,8 @@ router.post('/:id/select', [
       projectId: project._id
     });
 
+    let isNewProject = false;
+
     if (!projectUser) {
       // Create new ProjectUser entry
       projectUser = new ProjectUser({
@@ -246,9 +250,17 @@ router.post('/:id/select', [
       });
 
       await projectUser.save();
+      isNewProject = true;
 
       // Increment usage count only for new selections
       await project.incrementUsage();
+
+      // Update user plan - increment projectsCreated for new projects
+      const planUpdateResult = await incrementProjectCount(req.user._id);
+      if (!planUpdateResult.success) {
+        console.warn('Failed to update project count in user plan:', planUpdateResult.message || planUpdateResult.error);
+        // Don't fail the project selection if plan update fails, just log the warning
+      }
     } else {
       // Update last accessed time for existing project
       await projectUser.updateLastAccessed();
@@ -256,7 +268,7 @@ router.post('/:id/select', [
 
     res.status(200).json({
       success: true,
-      message: projectUser.isNew ? 'Project selected successfully' : 'Project accessed successfully',
+      message: isNewProject ? 'Project selected successfully' : 'Project accessed successfully',
       data: {
         project: {
           id: project._id,
@@ -269,7 +281,8 @@ router.post('/:id/select', [
           progress: projectUser.progress,
           startedAt: projectUser.startedAt,
           lastAccessedAt: projectUser.lastAccessedAt
-        }
+        },
+        isNewProject: isNewProject
       }
     });
   } catch (error) {

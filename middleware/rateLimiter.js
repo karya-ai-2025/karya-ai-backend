@@ -6,25 +6,31 @@ const { config } = require('../config/config');
 
 /**
  * General API rate limiter
+ * More lenient in development, stricter in production
  */
 const apiLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs, // 15 minutes by default
-  max: config.rateLimit.max, // 100 requests per window
+  max: config.env === 'development' ? 5000 : config.rateLimit.max, // 5000 for dev, 1000 for prod
   message: {
     success: false,
     status: 'error',
     message: 'Too many requests from this IP, please try again later.'
   },
   standardHeaders: true, // Return rate limit info in headers
-  legacyHeaders: false
+  legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for development environment if needed
+    return config.env === 'development' && req.ip === '::1'; // localhost IPv6
+  }
 });
 
 /**
  * Strict rate limiter for auth endpoints
+ * More lenient in development for testing
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 requests per 15 minutes
+  max: config.env === 'development' ? 100 : 10, // 100 for dev, 10 for prod
   message: {
     success: false,
     status: 'error',

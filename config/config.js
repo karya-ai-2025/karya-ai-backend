@@ -23,7 +23,7 @@ const config = {
     fromName: process.env.EMAIL_FROM_NAME || 'Karya-AI'
   },
 
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  frontendUrl: process.env.FRONTEND_URL,
 
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,

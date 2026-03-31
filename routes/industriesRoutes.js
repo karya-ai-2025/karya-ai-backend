@@ -24,8 +24,6 @@ router.get('/', async (req, res) => {
       }
     });
 
-    console.log(`Found ${industries.length} industries`);
-
     // Format for frontend dropdown
     const formattedIndustries = industries.map(industry => ({
       value: industry.industry_name.toLowerCase().replace(/\s+/g, '-'), // Convert to slug

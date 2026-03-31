@@ -15,6 +15,7 @@
     "build": "echo 'build step'",
 
     "seed:projects": "node utils/seedProjects.js",
+    "check:userplans": "node utils/checkUserPlans.js",
 
     "prisma:generate": "node node_modules/prisma/build/index.js generate",
     "prisma:pull": "prisma db pull",
