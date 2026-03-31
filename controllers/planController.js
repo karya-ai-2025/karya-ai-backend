@@ -143,7 +143,7 @@ const checkUserPlanAccess = async (req, res) => {
     }
 
     // Check remaining credits and projects
-    const remainingCredits = userPlan.planPackageId.credits - userPlan.creditsUsed;
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
     const remainingProjects = userPlan.planPackageId.projectsAvailable - userPlan.projectsCreated;
 
     // Calculate remaining resources
@@ -206,11 +206,13 @@ const createUserPlan = async (req, res) => {
     // Preserve existing usage data
     let existingProjectsCreated = 0;
     let existingCreditsUsed = 0;
+    let existingRemainingCredits = 0;
 
     if (existingPlan) {
       // Capture existing usage before cancelling
       existingProjectsCreated = existingPlan.projectsCreated || 0;
       existingCreditsUsed = existingPlan.creditsUsed || 0;
+      existingRemainingCredits = Math.max(0, (existingPlan.totalCredits || 0) - existingCreditsUsed);
 
       // Cancel existing plan
       existingPlan.status = 'cancelled';
@@ -218,7 +220,7 @@ const createUserPlan = async (req, res) => {
       existingPlan.cancellationReason = 'Upgraded to new plan';
       await existingPlan.save();
 
-      console.log(`Carrying over usage data: Projects: ${existingProjectsCreated}, Credits: ${existingCreditsUsed}`);
+      console.log(`Carrying over usage data: Projects: ${existingProjectsCreated}, Credits Used: ${existingCreditsUsed}, Remaining Credits: ${existingRemainingCredits}`);
     }
 
     // Calculate dates based on billing cycle
@@ -252,6 +254,10 @@ const createUserPlan = async (req, res) => {
         nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
     }
 
+    // Calculate total credits: new plan credits + remaining credits from old plan
+    const totalCredits = planPackage.credits + existingRemainingCredits;
+    console.log(`Total credits calculation: Plan credits (${planPackage.credits}) + Remaining credits (${existingRemainingCredits}) = ${totalCredits}`);
+
     // Create new user plan with carried over usage data
     const userPlan = new UserPlan({
       userId,
@@ -263,6 +269,7 @@ const createUserPlan = async (req, res) => {
       endDate,
       nextBillingDate,
       creditsUsed: existingCreditsUsed, // Carry over existing credits used
+      totalCredits: totalCredits, // New plan credits + remaining from old plan
       projectsCreated: existingProjectsCreated, // Carry over existing project count
       paymentDetails: {
         amount: planPackage.price,
@@ -343,11 +350,13 @@ const simpleUpgrade = async (req, res) => {
     // Preserve existing usage data
     let existingProjectsCreated = 0;
     let existingCreditsUsed = 0;
+    let existingRemainingCredits = 0;
 
     if (existingActivePlan) {
       existingProjectsCreated = existingActivePlan.projectsCreated || 0;
       existingCreditsUsed = existingActivePlan.creditsUsed || 0;
-      console.log(`Carrying over usage data: Projects: ${existingProjectsCreated}, Credits: ${existingCreditsUsed}`);
+      existingRemainingCredits = Math.max(0, (existingActivePlan.totalCredits || 0) - existingCreditsUsed);
+      console.log(`Carrying over usage data: Projects: ${existingProjectsCreated}, Credits Used: ${existingCreditsUsed}, Remaining Credits: ${existingRemainingCredits}`);
     }
 
     // Cancel any existing active plans for the user
@@ -395,6 +404,10 @@ const simpleUpgrade = async (req, res) => {
         nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
     }
 
+    // Calculate total credits: new plan credits + remaining credits from old plan
+    const totalCredits = planPackage.credits + existingRemainingCredits;
+    console.log(`Total credits calculation: Plan credits (${planPackage.credits}) + Remaining credits (${existingRemainingCredits}) = ${totalCredits}`);
+
     // Create new user plan with carried over usage data
     const userPlan = new UserPlan({
       userId: userId,
@@ -406,6 +419,7 @@ const simpleUpgrade = async (req, res) => {
       endDate: endDate,
       nextBillingDate: nextBillingDate,
       creditsUsed: existingCreditsUsed, // Carry over existing credits used
+      totalCredits: totalCredits, // New plan credits + remaining from old plan
       projectsCreated: existingProjectsCreated, // Carry over existing project count
       paymentDetails: {
         amount: planPackage.price,

@@ -58,6 +58,12 @@ const userPlanSchema = new mongoose.Schema(
       min: [0, 'Credits used cannot be negative']
     },
 
+    totalCredits: {
+      type: Number,
+      default: 0,
+      min: [0, 'Total credits cannot be negative']
+    },
+
     projectsCreated: {
       type: Number,
       default: 0,
@@ -125,8 +131,7 @@ userPlanSchema.virtual('isCurrentlyActive').get(function() {
 
 // Virtual to get remaining credits
 userPlanSchema.virtual('remainingCredits').get(function() {
-  // This would need to be populated with the plan package credits
-  return 0; // Placeholder - would calculate from planPackage.credits - creditsUsed
+  return Math.max(0, this.totalCredits - this.creditsUsed);
 });
 
 // Virtual to get remaining projects
@@ -170,8 +175,8 @@ userPlanSchema.methods.canCreateProject = function(planPackage) {
 };
 
 // Instance method to check if user has enough credits
-userPlanSchema.methods.hasEnoughCredits = function(planPackage, requiredCredits) {
-  const remainingCredits = planPackage.credits - this.creditsUsed;
+userPlanSchema.methods.hasEnoughCredits = function(requiredCredits) {
+  const remainingCredits = this.totalCredits - this.creditsUsed;
   return remainingCredits >= requiredCredits;
 };
 
