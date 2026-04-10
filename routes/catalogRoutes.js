@@ -1,7 +1,9 @@
 const express = require('express');
-const { query, param, validationResult } = require('express-validator');
+const { query, param, body, validationResult } = require('express-validator');
 const ProjectCatalog = require('../models/ProjectCatalog');
 const ProjectPricing = require('../models/ProjectPricing');
+const ProjectUser = require('../models/ProjectUser');
+const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -123,6 +125,126 @@ router.get('/categories', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/catalog/user/my-projects  (PROTECTED)
+// Returns all catalog projects the authenticated user has purchased.
+// Must be defined BEFORE /:slug so Express does not treat "user" as a slug.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/my-projects', protect, async (req, res) => {
+  try {
+    const purchases = await ProjectUser.find({
+      userId: req.user._id,
+      catalogId: { $ne: null },
+    })
+      .populate('catalogId', 'slug title tagline theme stats isFeatured')
+      .sort({ lastAccessedAt: -1 })
+      .lean();
+
+    const projects = purchases.map(p => ({
+      slug:            p.projectSlug,
+      title:           p.catalogId?.title   || p.projectSlug,
+      tagline:         p.catalogId?.tagline || '',
+      tierId:          p.tierId,
+      status:          p.status,
+      progress:        p.progress,
+      purchasedAt:     p.startedAt,
+      lastAccessedAt:  p.lastAccessedAt,
+    }));
+
+    res.json({ success: true, data: { projects } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch my projects', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/catalog/:slug/purchase  (PROTECTED)
+// Records a marketplace project purchase for the authenticated user.
+// Upserts so re-purchasing the same project just updates the tier.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/:slug/purchase', [
+  protect,
+  param('slug').isString().trim(),
+  body('tierId').isIn(['credit', 'bronze', 'silver', 'gold']).withMessage('Invalid tierId'),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const { tierId } = req.body;
+
+    const catalog = await ProjectCatalog.findOne({
+      slug: req.params.slug,
+      isActive: true,
+    }).select('_id title slug').lean();
+
+    if (!catalog) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    // Upsert: create if new, update tierId + lastAccessedAt if already exists
+    const purchase = await ProjectUser.findOneAndUpdate(
+      { userId: req.user._id, catalogId: catalog._id },
+      {
+        $setOnInsert: {
+          userId:      req.user._id,
+          catalogId:   catalog._id,
+          projectSlug: catalog.slug,
+          status:      'started',
+          startedAt:   new Date(),
+        },
+        $set: {
+          tierId,
+          lastAccessedAt: new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Purchase recorded',
+      data: {
+        slug:        catalog.slug,
+        title:       catalog.title,
+        tierId:      purchase.tierId,
+        status:      purchase.status,
+        purchasedAt: purchase.startedAt,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to record purchase', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/catalog/:slug/purchase  (PROTECTED)
+// Removes the user's purchase record for this project (unlinks it from My Projects).
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/:slug/purchase', [
+  protect,
+  param('slug').isString().trim(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const catalog = await ProjectCatalog.findOne({ slug: req.params.slug }).select('_id').lean();
+    if (!catalog) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const result = await ProjectUser.findOneAndDelete({
+      userId:    req.user._id,
+      catalogId: catalog._id,
+    });
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Purchase record not found' });
+    }
+
+    res.json({ success: true, message: 'Project removed from your account' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to remove project', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/catalog/:slug
 // Full project detail — includes pricing tiers via virtual populate
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +297,23 @@ router.get('/:slug/pricing', [
       .select('-__v -projectId')
       .lean();
 
-    res.json({ success: true, data: { projectId: project._id, title: project.title, tiers } });
+    const shaped = tiers.map(t => ({
+      tierId:             t.tierId,
+      name:               t.name,
+      badge:              t.badge || null,
+      popular:            t.popular,
+      displayOrder:       t.displayOrder,
+      amount:             t.price.amount,
+      priceLabel:         t.price.label,
+      billingCycle:       t.price.billingCycle,
+      billingNote:        t.price.note || null,
+      contacts:           t.quantities?.contacts || null,
+      deliverableSummary: t.deliverableSummary || null,
+      features:           t.features,
+      support:            t.support,
+    }));
+
+    res.json({ success: true, data: { projectId: project._id, title: project.title, tiers: shaped } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch pricing', error: err.message });
   }
