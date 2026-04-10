@@ -9,11 +9,25 @@ const projectUserSchema = new Schema({
     required: [true, 'User ID is required']
   },
 
-  // Project reference
+  // Project reference (internal Project model — used by project management routes)
   projectId: {
     type: Schema.Types.ObjectId,
     ref: 'Project',
-    required: [true, 'Project ID is required']
+    default: null
+  },
+
+  // Catalog reference (ProjectCatalog — used by marketplace purchase flow)
+  catalogId: {
+    type: Schema.Types.ObjectId,
+    ref: 'ProjectCatalog',
+    default: null
+  },
+
+  // Pricing tier selected at purchase time (credit / bronze / silver / gold)
+  tierId: {
+    type: String,
+    enum: ['credit', 'bronze', 'silver', 'gold'],
+    default: null
   },
 
   // Project slug for easy routing
@@ -89,7 +103,14 @@ const projectUserSchema = new Schema({
 // Indexes for better performance
 projectUserSchema.index({ userId: 1 });
 projectUserSchema.index({ projectId: 1 });
-projectUserSchema.index({ userId: 1, projectId: 1 }, { unique: true }); // Prevent duplicate user-project combinations
+// Partial unique: only enforced when projectId is a real ObjectId (not null/missing).
+// sparse: true does NOT skip null values — partialFilterExpression does.
+projectUserSchema.index(
+  { userId: 1, projectId: 1 },
+  { unique: true, partialFilterExpression: { projectId: { $exists: true, $ne: null } } }
+);
+// Sparse unique: only enforced when catalogId is set (marketplace purchases)
+projectUserSchema.index({ userId: 1, catalogId: 1 }, { unique: true, sparse: true });
 projectUserSchema.index({ userId: 1, status: 1 });
 projectUserSchema.index({ lastAccessedAt: -1 });
 

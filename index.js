@@ -21,11 +21,13 @@ const profileRoutes = require('./routes/profileRoutes');
 const onboardingRoutes = require('./routes/onboardingRoutes');
 const expertOnboardingRoutes=require('./routes/Expertonboardingroutes')
 const marketplaceRoutes=require('./routes/Marketplaceroutes')
-const projectRoutes = require('./routes/projectRoutes');
+// projectRoutes removed — Project collection replaced by ProjectCatalog
 const industriesRoutes = require('./routes/industriesRoutes'); // PostgreSQL industries
 const leadsRoutes = require('./routes/leadsRoutes'); // Lead generation routes
 const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
+const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
+const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
 
 // Validate environment variables
 validateConfig();
@@ -107,9 +109,11 @@ app.use('/api/profiles', profileRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/expert-onboarding',expertOnboardingRoutes)
 app.use('/api/marketplace',marketplaceRoutes)
-app.use('/api/projects', projectRoutes);
+// /api/projects removed — Project collection replaced by ProjectCatalog
 app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
+app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
+app.use('/api/submissions', submissionRoutes); // Project brief submissions
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 
