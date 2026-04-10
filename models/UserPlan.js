@@ -92,6 +92,40 @@ const userPlanSchema = new mongoose.Schema(
       stripeSubscriptionId: {
         type: String,
         trim: true
+      },
+      // Credit purchases tracking
+      creditPurchases: [{
+        amount: {
+          type: Number,
+          required: true
+        },
+        credits: {
+          type: Number,
+          required: true
+        },
+        purchaseDate: {
+          type: Date,
+          default: Date.now
+        },
+        transactionId: {
+          type: String,
+          required: true
+        },
+        paymentMethod: {
+          type: String,
+          default: 'manual'
+        },
+        currency: {
+          type: String,
+          default: 'USD'
+        }
+      }],
+      // Quick reference to last credit purchase
+      lastCreditPurchase: {
+        amount: Number,
+        credits: Number,
+        purchaseDate: Date,
+        transactionId: String
       }
     },
 

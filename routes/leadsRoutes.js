@@ -4,6 +4,9 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { prisma } = require('../utils/prismaClient'); // Global singleton client
+const CreditCost = require('../models/CreditCost');
+const UserCreditConsumption = require('../models/UserCreditConsumption');
+const UserPlan = require('../models/UserPlan');
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -18,6 +21,793 @@ const handleValidationErrors = (req, res, next) => {
   }
   next();
 };
+
+// Helper function to get user from request (assumes auth middleware sets req.user)
+const getUserFromRequest = (req) => {
+  // This should be set by your auth middleware
+  // For now, we'll assume it exists or extract from headers
+  return req.user || null;
+};
+
+/**
+ * GET /api/credits/cost/:actionType
+ * Get credit cost for a specific action type
+ */
+router.get('/credits/cost/:actionType', async (req, res) => {
+  try {
+    const { actionType } = req.params;
+
+    // Validate action type
+    const validActions = ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS'];
+    if (!validActions.includes(actionType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid action type',
+        validActions
+      });
+    }
+
+    // Get credit cost from database
+    const creditCost = await CreditCost.findOne({
+      actionType: actionType,
+      isActive: true
+    });
+
+    if (!creditCost) {
+      return res.status(404).json({
+        success: false,
+        message: `Credit cost not found for action: ${actionType}`
+      });
+    }
+
+    res.json({
+      success: true,
+      actionType: creditCost.actionType,
+      credits: creditCost.credits,
+      description: creditCost.description
+    });
+
+  } catch (error) {
+    console.error('Get credit cost error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get credit cost',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/credits/costs
+ * Get all credit costs
+ */
+router.get('/credits/costs', async (req, res) => {
+  try {
+    const creditCosts = await CreditCost.getAllActiveCosts();
+
+    const costsMap = {};
+    creditCosts.forEach(cost => {
+      costsMap[cost.actionType] = {
+        credits: cost.credits,
+        description: cost.description
+      };
+    });
+
+    res.json({
+      success: true,
+      data: costsMap,
+      total: creditCosts.length
+    });
+
+  } catch (error) {
+    console.error('Get all credit costs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get credit costs',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/credits/consume
+ * Consume credits for a specific action
+ */
+router.post('/credits/consume', [
+  body('actionType').isIn(['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS']).withMessage('Valid action type is required'),
+  body('leadId').optional().isString().withMessage('Lead ID must be a string'),
+  body('leadEmail').optional().isEmail().withMessage('Valid email is required when provided'),
+  body('leadPhone').optional().isString().withMessage('Phone must be a string'),
+  body('leadName').optional().isString().withMessage('Lead name must be a string'),
+  body('leadCompany').optional().isString().withMessage('Lead company must be a string'),
+  body('userId').notEmpty().withMessage('User ID is required'), // Temporary - should come from auth middleware
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const {
+      actionType,
+      leadId,
+      leadEmail,
+      leadPhone,
+      leadName,
+      leadCompany,
+      userId // Temporary - should come from req.user
+    } = req.body;
+
+    console.log(`Processing credit consumption: ${actionType} for user ${userId}`);
+
+    // Get credit cost for this action
+    const creditCost = await CreditCost.getCreditCost(actionType);
+
+    // Find user's active plan
+    const userPlan = await UserPlan.findOne({
+      userId: userId,
+      status: 'active',
+      endDate: { $gt: new Date() }
+    });
+
+    if (!userPlan) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active plan found for user'
+      });
+    }
+
+    // Check if user has enough credits
+    if (!userPlan.hasEnoughCredits(creditCost)) {
+      const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+      return res.status(402).json({
+        success: false,
+        message: 'Insufficient credits',
+        required: creditCost,
+        remaining: remainingCredits
+      });
+    }
+
+    // For VIEW actions, check if user has already viewed this lead's contact info
+    if ((actionType === 'VIEW_EMAIL' || actionType === 'VIEW_PHONE') && leadId) {
+      const existingView = await UserCreditConsumption.hasUserViewedLead(userId, leadId, actionType);
+      if (existingView) {
+        return res.status(409).json({
+          success: false,
+          message: 'Contact information already viewed for this lead',
+          viewedAt: existingView.createdAt
+        });
+      }
+    }
+
+    // Create consumption record
+    const consumption = new UserCreditConsumption({
+      userId: userId,
+      userPlanId: userPlan._id,
+      actionType: actionType,
+      creditsConsumed: creditCost,
+      leadId: leadId,
+      leadEmail: leadEmail,
+      leadPhone: leadPhone,
+      leadName: leadName,
+      leadCompany: leadCompany,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent')
+    });
+
+    // Update user plan credits in a transaction-like manner
+    userPlan.creditsUsed += creditCost;
+
+    // Save both records
+    await Promise.all([
+      consumption.save(),
+      userPlan.save()
+    ]);
+
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+
+    console.log(`Credits consumed: ${creditCost}, Remaining: ${remainingCredits}`);
+
+    res.json({
+      success: true,
+      message: 'Credits consumed successfully',
+      consumedCredits: creditCost,
+      remainingCredits: remainingCredits,
+      totalCredits: userPlan.totalCredits,
+      transactionId: consumption._id
+    });
+
+  } catch (error) {
+    console.error('Credit consumption error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to consume credits',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/credits/history
+ * Get user's credit consumption history
+ */
+router.get('/credits/history', [
+  query('userId').notEmpty().withMessage('User ID is required'), // Temporary - should come from auth middleware
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const { userId } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    console.log(`Fetching credit history for user ${userId}, page ${page}`);
+
+    // Get consumption history
+    const history = await UserCreditConsumption.getUserHistory(userId, page, limit);
+
+    // Get total count for pagination
+    const totalCount = await UserCreditConsumption.countDocuments({ userId });
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.json({
+      success: true,
+      data: {
+        history: history,
+        pagination: {
+          currentPage: page,
+          totalPages: totalPages,
+          totalCount: totalCount,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Credit history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch credit history',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/credits/balance/:userId
+ * Get user's current credit balance
+ */
+router.get('/credits/balance/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    console.log(`Fetching credit balance for user ${userId}`);
+
+    // Find user's active plan
+    const userPlan = await UserPlan.findOne({
+      userId: userId,
+      status: 'active',
+      endDate: { $gt: new Date() }
+    });
+
+    if (!userPlan) {
+      return res.json({
+        success: true,
+        hasActivePlan: false,
+        remainingCredits: 0,
+        totalCredits: 0,
+        creditsUsed: 0
+      });
+    }
+
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+
+    res.json({
+      success: true,
+      hasActivePlan: true,
+      remainingCredits: remainingCredits,
+      totalCredits: userPlan.totalCredits,
+      creditsUsed: userPlan.creditsUsed,
+      planId: userPlan.planId,
+      planPackageId: userPlan.planPackageId
+    });
+
+  } catch (error) {
+    console.error('Credit balance error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch credit balance',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/credits/consume-enhanced
+ * Enhanced credit consumption for leads download with format options
+ */
+router.post('/credits/consume-enhanced', [
+  body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
+  body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
+  body('leads').isArray().withMessage('Leads must be an array'),
+  body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
+  body('userId').notEmpty().withMessage('User ID is required'),
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const { actionType, downloadFormat, leads, totalCost, userId } = req.body;
+
+    console.log(`Processing enhanced credit consumption: ${leads.length} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
+
+    // Find user's active plan
+    const userPlan = await UserPlan.findOne({
+      userId: userId,
+      status: 'active',
+      endDate: { $gt: new Date() }
+    });
+
+    if (!userPlan) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active plan found for user'
+      });
+    }
+
+    // Check if user has enough credits
+    if (totalCost > 0 && !userPlan.hasEnoughCredits(totalCost)) {
+      const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+      return res.status(402).json({
+        success: false,
+        message: 'Insufficient credits',
+        required: totalCost,
+        remaining: remainingCredits
+      });
+    }
+
+    // If totalCost is 0, no credits to consume
+    if (totalCost === 0) {
+      return res.json({
+        success: true,
+        message: 'Download authorized - no additional credits required',
+        consumedCredits: 0,
+        remainingCredits: userPlan.totalCredits - userPlan.creditsUsed,
+        totalCredits: userPlan.totalCredits
+      });
+    }
+
+    // Create consumption records for each lead that consumed credits
+    const consumptionRecords = leads.map(lead => ({
+      userId: userId,
+      userPlanId: userPlan._id,
+      actionType: actionType,
+      creditsConsumed: lead.creditsForThisLead,
+      leadId: lead.leadId,
+      leadEmail: lead.leadEmail,
+      leadPhone: lead.leadPhone,
+      leadName: lead.leadName,
+      leadCompany: lead.leadCompany,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        enhancedDownload: true,
+        downloadFormat: downloadFormat,
+        totalLeadsInBatch: leads.length,
+        creditsForThisLead: lead.creditsForThisLead
+      }
+    }));
+
+    // Update user plan credits
+    userPlan.creditsUsed += totalCost;
+
+    // Save all records in parallel
+    await Promise.all([
+      UserCreditConsumption.insertMany(consumptionRecords),
+      userPlan.save()
+    ]);
+
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+
+    console.log(`Enhanced credits consumed: ${totalCost}, Format: ${downloadFormat}, Remaining: ${remainingCredits}`);
+
+    res.json({
+      success: true,
+      message: 'Credits consumed successfully for enhanced download',
+      consumedCredits: totalCost,
+      remainingCredits: remainingCredits,
+      totalCredits: userPlan.totalCredits,
+      leadsProcessed: leads.length,
+      downloadFormat: downloadFormat
+    });
+
+  } catch (error) {
+    console.error('Enhanced credit consumption error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to consume credits for enhanced download',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/credits/consume-batch
+ * Consume credits for downloading multiple leads (legacy support)
+ */
+router.post('/credits/consume-batch', [
+  body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
+  body('leads').isArray().withMessage('Leads must be an array'),
+  body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
+  body('userId').notEmpty().withMessage('User ID is required'),
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const { actionType, leads, totalCost, userId } = req.body;
+
+    console.log(`Processing batch credit consumption: ${leads.length} leads for user ${userId}, cost: ${totalCost}`);
+
+    // Find user's active plan
+    const userPlan = await UserPlan.findOne({
+      userId: userId,
+      status: 'active',
+      endDate: { $gt: new Date() }
+    });
+
+    if (!userPlan) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active plan found for user'
+      });
+    }
+
+    // Check if user has enough credits
+    if (totalCost > 0 && !userPlan.hasEnoughCredits(totalCost)) {
+      const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+      return res.status(402).json({
+        success: false,
+        message: 'Insufficient credits',
+        required: totalCost,
+        remaining: remainingCredits
+      });
+    }
+
+    // If totalCost is 0, no credits to consume (all leads already viewed)
+    if (totalCost === 0) {
+      return res.json({
+        success: true,
+        message: 'Download authorized - no additional credits required',
+        consumedCredits: 0,
+        remainingCredits: userPlan.totalCredits - userPlan.creditsUsed,
+        totalCredits: userPlan.totalCredits
+      });
+    }
+
+    // Create consumption records for each lead
+    const consumptionRecords = leads.map(lead => ({
+      userId: userId,
+      userPlanId: userPlan._id,
+      actionType: actionType,
+      creditsConsumed: 1, // 1 credit per lead for download
+      leadId: lead.leadId,
+      leadEmail: lead.leadEmail,
+      leadName: lead.leadName,
+      leadCompany: lead.leadCompany,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        batchDownload: true,
+        totalLeadsInBatch: leads.length
+      }
+    }));
+
+    // Update user plan credits
+    userPlan.creditsUsed += totalCost;
+
+    // Save all records in parallel
+    await Promise.all([
+      UserCreditConsumption.insertMany(consumptionRecords),
+      userPlan.save()
+    ]);
+
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+
+    console.log(`Batch credits consumed: ${totalCost}, Remaining: ${remainingCredits}`);
+
+    res.json({
+      success: true,
+      message: 'Credits consumed successfully for batch download',
+      consumedCredits: totalCost,
+      remainingCredits: remainingCredits,
+      totalCredits: userPlan.totalCredits,
+      leadsProcessed: leads.length
+    });
+
+  } catch (error) {
+    console.error('Batch credit consumption error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to consume credits for batch download',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/credits/consume-bulk
+ * Bulk credit consumption for large lead downloads
+ */
+router.post('/credits/consume-bulk', [
+  body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
+  body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
+  body('downloadCount').isInt({ min: 1 }).withMessage('Download count must be a positive integer'),
+  body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
+  body('userId').notEmpty().withMessage('User ID is required'),
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const { actionType, downloadFormat, downloadCount, totalCost, searchCriteria, userId } = req.body;
+
+    console.log(`Processing bulk credit consumption: ${downloadCount} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
+
+    // Find user's active plan
+    const userPlan = await UserPlan.findOne({
+      userId: userId,
+      status: 'active',
+      endDate: { $gt: new Date() }
+    });
+
+    if (!userPlan) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active plan found for user'
+      });
+    }
+
+    // Check if user has enough credits
+    if (totalCost > 0 && !userPlan.hasEnoughCredits(totalCost)) {
+      const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+      return res.status(402).json({
+        success: false,
+        message: 'Insufficient credits',
+        required: totalCost,
+        remaining: remainingCredits
+      });
+    }
+
+    // If totalCost is 0, no credits to consume
+    if (totalCost === 0) {
+      return res.json({
+        success: true,
+        message: 'Download authorized - no additional credits required',
+        consumedCredits: 0,
+        remainingCredits: userPlan.totalCredits - userPlan.creditsUsed,
+        totalCredits: userPlan.totalCredits
+      });
+    }
+
+    // Create a single consumption record for bulk download
+    const consumptionRecord = new UserCreditConsumption({
+      userId: userId,
+      userPlanId: userPlan._id,
+      actionType: actionType,
+      creditsConsumed: totalCost,
+      leadId: 'bulk_download', // Special identifier for bulk downloads
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        bulkDownload: true,
+        downloadFormat: downloadFormat,
+        downloadCount: downloadCount,
+        searchCriteria: searchCriteria,
+        totalCost: totalCost
+      }
+    });
+
+    // Update user plan credits
+    userPlan.creditsUsed += totalCost;
+
+    // Save both records in parallel
+    await Promise.all([
+      consumptionRecord.save(),
+      userPlan.save()
+    ]);
+
+    const remainingCredits = userPlan.totalCredits - userPlan.creditsUsed;
+
+    console.log(`Bulk credits consumed: ${totalCost}, Format: ${downloadFormat}, Count: ${downloadCount}, Remaining: ${remainingCredits}`);
+
+    res.json({
+      success: true,
+      message: 'Credits consumed successfully for bulk download',
+      consumedCredits: totalCost,
+      remainingCredits: remainingCredits,
+      totalCredits: userPlan.totalCredits,
+      downloadCount: downloadCount,
+      downloadFormat: downloadFormat
+    });
+
+  } catch (error) {
+    console.error('Bulk credit consumption error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to consume credits for bulk download',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/leads/generate-for-download
+ * Generate leads specifically for download (can return more than display limit)
+ */
+router.post('/generate-for-download', [
+  body('industry').notEmpty().withMessage('Industry is required'),
+  body('downloadCount').isInt({ min: 1 }).withMessage('Download count must be a positive integer'),
+  body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
+  handleValidationErrors
+], async (req, res) => {
+  try {
+    const { industry, company, companySegment, location, downloadCount, downloadFormat, userId } = req.body;
+    console.log(`Generating ${downloadCount} leads for download: format=${downloadFormat}, user=${userId}`);
+
+    // Build search filters (same as regular generate endpoint)
+    const whereClause = {};
+
+    // Industry filter
+    if (industry) {
+      const industryRecord = await prisma.tbl_gtm_industry.findFirst({
+        where: {
+          industry_name: {
+            contains: industry.replace('-', ' '),
+            mode: 'insensitive'
+          }
+        }
+      });
+
+      const industrySearchTerm = industryRecord ? industryRecord.industry_name : industry;
+      whereClause.GTM_Industry = {
+        contains: industrySearchTerm,
+        mode: 'insensitive'
+      };
+    }
+
+    // Company filter
+    if (company && company.trim()) {
+      whereClause.Account_Name = {
+        contains: company.trim(),
+        mode: 'insensitive'
+      };
+    }
+
+    // Company segment filter
+    if (companySegment && companySegment.trim()) {
+      whereClause.Account_Sub_Segment = {
+        equals: companySegment.trim()
+      };
+    }
+
+    // Location filter
+    if (location && location.trim()) {
+      whereClause.Mailing_Country = {
+        contains: location.trim(),
+        mode: 'insensitive'
+      };
+    }
+
+    // Select fields based on download format
+    const selectFields = {
+      id: true,
+      First_Name: true,
+      Last_Name: true,
+      title: true,
+      Account_Name: true,
+      email: true,
+      GTM_Industry: true,
+      GTM_Sector: true,
+      Account_Sub_Segment: true,
+      Mailing_Country: true,
+      employees: true
+    };
+
+    if (downloadFormat === 'email_phone') {
+      selectFields.phone = true;
+      selectFields.mobile = true;
+    }
+
+    // Execute search with requested count
+    const leads = await prisma.tbl_healthcare.findMany({
+      where: whereClause,
+      select: selectFields,
+      take: downloadCount, // Use the requested download count
+      orderBy: [
+        { Account_Name: 'asc' },
+        { Last_Name: 'asc' }
+      ]
+    });
+
+    console.log(`Generated ${leads.length} leads for download (requested: ${downloadCount})`);
+
+    res.json({
+      success: true,
+      data: leads,
+      downloadInfo: {
+        requested: downloadCount,
+        returned: leads.length,
+        format: downloadFormat
+      }
+    });
+
+  } catch (error) {
+    console.error('Lead generation for download error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate leads for download',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+/**
+ * POST /api/credits/initialize
+ * Initialize credit costs in the database (run once)
+ */
+router.post('/credits/initialize', async (req, res) => {
+  try {
+    console.log('Initializing credit costs...');
+
+    // Check if credit costs already exist
+    const existingCount = await CreditCost.countDocuments();
+
+    if (existingCount > 0) {
+      const currentCosts = await CreditCost.find({ isActive: true }).sort({ actionType: 1 });
+      return res.json({
+        success: true,
+        message: 'Credit costs already initialized',
+        data: currentCosts,
+        count: existingCount
+      });
+    }
+
+    // Default credit cost configuration
+    const defaultCosts = [
+      {
+        actionType: 'VIEW_EMAIL',
+        credits: 1,
+        description: 'View email address of a lead',
+        isActive: true
+      },
+      {
+        actionType: 'VIEW_PHONE',
+        credits: 3,
+        description: 'View phone number of a lead',
+        isActive: true
+      },
+      {
+        actionType: 'DOWNLOAD_LEADS',
+        credits: 1,
+        description: 'Download lead data (per lead)',
+        isActive: true
+      }
+    ];
+
+    // Insert default costs
+    const insertedCosts = await CreditCost.insertMany(defaultCosts);
+
+    console.log(`Successfully initialized ${insertedCosts.length} credit cost records`);
+
+    res.json({
+      success: true,
+      message: 'Credit costs initialized successfully',
+      data: insertedCosts,
+      count: insertedCosts.length
+    });
+
+  } catch (error) {
+    console.error('Credit initialization error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to initialize credit costs',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 
 /**
  * GET /api/leads/companies/suggestions

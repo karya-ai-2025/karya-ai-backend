@@ -566,7 +566,7 @@ const updateProfile = asyncHandler(async (req, res, next) => {
     user = await User.findByIdAndUpdate(
       req.user._id,
       userUpdates,
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
   } else {
     user = await User.findById(req.user._id);
@@ -577,7 +577,7 @@ const updateProfile = asyncHandler(async (req, res, next) => {
     await BusinessProfile.findByIdAndUpdate(
       user.profiles.owner,
       businessUpdates,
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
   }
 

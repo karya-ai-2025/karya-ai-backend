@@ -58,7 +58,7 @@ const updateBusinessProfile = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     updates,
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   if (profile.completionPercentage >= 80 && !user.onboarding.owner.completed) {
@@ -88,7 +88,7 @@ const updateBusinessOnboarding = asyncHandler(async (req, res, next) => {
   
   if (data && Object.keys(data).length > 0) {
     await BusinessProfile.findByIdAndUpdate(
-      user.profiles.owner, data, { new: true, runValidators: true }
+      user.profiles.owner, data, { returnDocument: 'after', runValidators: true }
     );
   }
   
@@ -158,7 +158,7 @@ const updateExpertProfile = asyncHandler(async (req, res, next) => {
   const profile = await ExpertProfile.findByIdAndUpdate(
     user.profiles.expert,
     updates,
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   if (profile.completionPercentage >= 80 && !user.onboarding.expert.completed) {
@@ -188,7 +188,7 @@ const updateExpertOnboarding = asyncHandler(async (req, res, next) => {
   
   if (data && Object.keys(data).length > 0) {
     await ExpertProfile.findByIdAndUpdate(
-      user.profiles.expert, data, { new: true, runValidators: true }
+      user.profiles.expert, data, { returnDocument: 'after', runValidators: true }
     );
   }
   

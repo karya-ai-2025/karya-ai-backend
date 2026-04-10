@@ -24,7 +24,7 @@ const updateProfilePhoto = asyncHandler(async (req, res, next) => {
   const user = await User.findByIdAndUpdate(
     req.user._id,
     { avatar },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -67,7 +67,7 @@ const updatePlatformUsage = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     { platformUsageType },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -119,7 +119,7 @@ const updateCompanyDetails = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     updateData,
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -163,7 +163,7 @@ const updateBrandLogo = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     { 'company.logo': logo },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -219,7 +219,7 @@ const updateICPs = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     { idealCustomerProfiles: formattedICPs },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -307,7 +307,7 @@ const updateMarketingActivities = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     updateData,
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Update onboarding step
@@ -346,7 +346,7 @@ const updateQuickWins = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     { quickWins: quickWins || [] },
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Mark onboarding as complete
@@ -503,7 +503,7 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
   const profile = await BusinessProfile.findByIdAndUpdate(
     user.profiles.owner,
     profileUpdate,
-    { new: true, runValidators: true }
+    { returnDocument: 'after', runValidators: true }
   );
   
   // Mark onboarding as complete

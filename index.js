@@ -25,6 +25,7 @@ const projectRoutes = require('./routes/projectRoutes');
 const industriesRoutes = require('./routes/industriesRoutes'); // PostgreSQL industries
 const leadsRoutes = require('./routes/leadsRoutes'); // Lead generation routes
 const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
+const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
 
 // Validate environment variables
 validateConfig();
@@ -110,6 +111,7 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api', planRoutes); // Plan and pricing management
+app.use('/api/credits', creditRoutes); // Credit consumption tracking
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);
