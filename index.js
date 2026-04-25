@@ -119,12 +119,12 @@ app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
+app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth) — must be before planRoutes
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
-app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 
 // Future routes (placeholders)
