@@ -195,7 +195,7 @@ router.post('/:slug/purchase', [
           lastAccessedAt: new Date(),
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     res.json({
