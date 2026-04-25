@@ -1,34 +1,9 @@
-const crypto = require('crypto');
 const CampaignEmail = require('../models/CampaignEmail');
 const Campaign = require('../models/Campaign');
 
-const verifyMailgunWebhook = (timestamp, token, signature) => {
-  const signingKey = process.env.MAILGUN_WEBHOOK_SIGNING_KEY || process.env.MAILGUN_API_KEY; // mailGun is not proving sign in key for webhook auth 
-  if (!signingKey) return true;
-
-  const encodedToken = crypto
-    .createHmac('sha256', signingKey)
-    .update(timestamp.concat(token))
-    .digest('hex');
-
-  return encodedToken === signature;
-};
-
 const handleMailgunWebhook = async (req, res) => {
   try {
-    const { signature, 'event-data': eventData } = req.body;
-
-    if (signature) {
-      const isValid = verifyMailgunWebhook(
-        signature.timestamp,
-        signature.token,
-        signature.signature
-      );
-      if (!isValid) {
-        console.warn('Invalid Mailgun webhook signature');
-        return res.status(406).json({ message: 'Invalid signature' });
-      }
-    }
+    const { 'event-data': eventData } = req.body;
 
     if (!eventData) {
       return res.status(200).json({ message: 'No event data' });
