@@ -7,6 +7,8 @@ const { prisma } = require('../utils/prismaClient'); // Global singleton client
 const CreditCost = require('../models/CreditCost');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const UserPlan = require('../models/UserPlan');
+const { getUserLeads, getUserLeadsCount } = require('../controllers/userLeadsController');
+const { protect } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -28,6 +30,20 @@ const getUserFromRequest = (req) => {
   // For now, we'll assume it exists or extract from headers
   return req.user || null;
 };
+
+/**
+ * GET /api/leads/user-leads
+ * Get leads that user has accessed/downloaded
+ * @access Private
+ */
+router.get('/user-leads', protect, getUserLeads);
+
+/**
+ * GET /api/leads/user-leads/count
+ * Get count of leads that user has accessed
+ * @access Private
+ */
+router.get('/user-leads/count', protect, getUserLeadsCount);
 
 /**
  * GET /api/credits/cost/:actionType
