@@ -8,8 +8,8 @@ const creditCostSchema = new mongoose.Schema(
       required: [true, 'Action type is required'],
       unique: true,
       enum: {
-        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS'],
-        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, or DOWNLOAD_LEADS'
+        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS', 'SEND_CAMPAIGN_EMAIL'],
+        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, DOWNLOAD_LEADS, or SEND_CAMPAIGN_EMAIL'
       }
     },
 
