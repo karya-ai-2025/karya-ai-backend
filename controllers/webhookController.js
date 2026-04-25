@@ -3,8 +3,8 @@ const CampaignEmail = require('../models/CampaignEmail');
 const Campaign = require('../models/Campaign');
 
 const verifyMailgunWebhook = (timestamp, token, signature) => {
-  const signingKey = process.env.MAILGUN_WEBHOOK_SIGNING_KEY || process.env.MAILGUN_API_KEY;
-  if (!signingKey) return true; // skip verification if no key configured
+  const signingKey = process.env.MAILGUN_WEBHOOK_SIGNING_KEY || process.env.MAILGUN_API_KEY; // mailGun is not proving sign in key for webhook auth 
+  if (!signingKey) return true;
 
   const encodedToken = crypto
     .createHmac('sha256', signingKey)
