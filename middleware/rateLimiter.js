@@ -1,13 +1,12 @@
 // middleware/rateLimiter.js
 // Rate limiting middleware to prevent abuse
 
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { config } = require('../config/config');
 
-// Strip port suffix from IP addresses (e.g. "103.47.170.35:52419" → "103.47.170.35")
 const keyGenerator = (req) => {
   const ip = req.ip || '127.0.0.1';
-  return ip.replace(/:\d+$/, '');
+  return ipKeyGenerator(ip);
 };
 
 /**
