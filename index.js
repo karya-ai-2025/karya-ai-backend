@@ -40,6 +40,9 @@ validateConfig();
 // Initialize Express
 const app = express();
 
+// Trust first proxy (needed for express-rate-limit behind reverse proxy)
+app.set('trust proxy', 1);
+
 // ============================================
 // SECURITY MIDDLEWARE
 // ============================================
