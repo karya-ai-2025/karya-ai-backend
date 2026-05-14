@@ -236,6 +236,40 @@ const otpTemplate = (name, otp) => baseTemplate(`
   <p>Don't share this code with anyone.</p>
 `);
 
+/**
+ * Schedule call confirmation template
+ */
+const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) => {
+  const formattedDate = new Date(dateTime).toLocaleDateString('en-IN', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone,
+  });
+  const formattedTime = new Date(dateTime).toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short', timeZone: timezone,
+  });
+
+  const meetSection = meetLink
+    ? `<div style="text-align:center;">
+        <a href="${meetLink}" class="button">Join Google Meet</a>
+       </div>
+       <p style="word-break:break-all;color:#8B5CF6;font-size:14px;text-align:center;">${meetLink}</p>`
+    : `<p style="background:#f8f5ff;border-radius:12px;padding:16px;text-align:center;color:#555;">
+        The Google Meet link will be sent to you shortly once confirmed by our team.
+       </p>`;
+
+  return baseTemplate(`
+    <h1 style="color:#1a1a1a;margin-bottom:20px;">Your Call is Confirmed! 🎉</h1>
+    <p>Hi ${name},</p>
+    <p>Your onboarding call with the Karya-AI team has been successfully scheduled.</p>
+    <div style="background:#f8f5ff;border-radius:12px;padding:20px;margin:20px 0;">
+      <p style="margin:0 0 8px 0;"><strong>📅 Date:</strong> ${formattedDate}</p>
+      <p style="margin:0;"><strong>🕐 Time:</strong> ${formattedTime}</p>
+    </div>
+    ${meetSection}
+    <p>During this 30-minute call, our team will help you get set up and answer any questions you have.</p>
+    <p>See you soon!</p>
+  `);
+};
+
 // Export all
 module.exports = {
   sendEmail,
@@ -244,6 +278,7 @@ module.exports = {
     emailVerification: emailVerificationTemplate,
     passwordReset: passwordResetTemplate,
     passwordChanged: passwordChangedTemplate,
-    otp: otpTemplate
+    otp: otpTemplate,
+    scheduleCallConfirmation: scheduleCallConfirmationTemplate,
   }
 };
