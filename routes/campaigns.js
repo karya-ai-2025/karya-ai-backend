@@ -5,6 +5,8 @@ const {
   getCampaigns,
   getCampaign,
   createCampaign,
+  validateCampaignEmails,
+  duplicateCampaign,
   updateCampaign,
   deleteCampaign,
   startCampaign,
@@ -24,6 +26,9 @@ router.route('/')
 // Dashboard route (before /:id to avoid conflicts)
 router.get('/dashboard', getDashboardData); // GET /api/campaigns/dashboard
 
+// Email validation route (before /:id to avoid conflicts)
+router.post('/validate-emails', validateCampaignEmails); // POST /api/campaigns/validate-emails
+
 // Individual campaign routes
 router.route('/:id')
   .get(getCampaign)       // GET /api/campaigns/:id - Get single campaign
@@ -31,6 +36,7 @@ router.route('/:id')
   .delete(deleteCampaign); // DELETE /api/campaigns/:id - Delete campaign
 
 // Campaign action routes
+router.post('/:id/duplicate', duplicateCampaign); // POST /api/campaigns/:id/duplicate - Copy campaign as draft
 router.post('/:id/start', startCampaign);   // POST /api/campaigns/:id/start - Start campaign
 router.post('/:id/pause', pauseCampaign);   // POST /api/campaigns/:id/pause - Pause campaign
 

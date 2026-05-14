@@ -21,14 +21,24 @@ function getClient() {
 const DOMAIN = process.env.MAILGUN_DOMAIN;
 const FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL;
 
-const sendEmail = async ({ to, subject, html, text }) => {
+const sendEmail = async ({ to, subject, html, text, attachments = [] }) => {
   const mg = getClient();
+  const mailgunAttachments = attachments
+    .filter((attachment) => attachment && attachment.data)
+    .map((attachment) => ({
+      data: attachment.data,
+      filename: attachment.filename || attachment.originalName || attachment.fileName || 'attachment',
+      contentType: attachment.contentType || 'application/octet-stream',
+      knownLength: attachment.knownLength || attachment.size
+    }));
+
   const messageData = {
     from: FROM_EMAIL,
     to: Array.isArray(to) ? to : [to],
     subject,
     ...(html && { html }),
     ...(text && { text }),
+    ...(mailgunAttachments.length > 0 && { attachment: mailgunAttachments }),
     'o:tracking': 'yes',
     'o:tracking-clicks': 'yes',
     'o:tracking-opens': 'yes'

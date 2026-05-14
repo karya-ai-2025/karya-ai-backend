@@ -21,8 +21,8 @@ const userCreditConsumptionSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Action type is required'],
       enum: {
-        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS', 'SEND_CAMPAIGN_EMAIL'],
-        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, DOWNLOAD_LEADS, or SEND_CAMPAIGN_EMAIL'
+        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS', 'SEND_CAMPAIGN_EMAIL', 'VALIDATE_EMAIL'],
+        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, DOWNLOAD_LEADS, SEND_CAMPAIGN_EMAIL, or VALIDATE_EMAIL'
       }
     },
 
@@ -158,6 +158,8 @@ userCreditConsumptionSchema.methods.getActionDescription = function() {
       return 'Downloaded leads data';
     case 'SEND_CAMPAIGN_EMAIL':
       return `Campaign email sending${this.metadata?.campaignName ? ` — ${this.metadata.campaignName}` : ''}`;
+    case 'VALIDATE_EMAIL':
+      return `Validated ${this.metadata?.verifiedEmails || this.creditsConsumed || 0} email${(this.metadata?.verifiedEmails || this.creditsConsumed || 0) === 1 ? '' : 's'}`;
     default:
       return 'Unknown action';
   }

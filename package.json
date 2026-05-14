@@ -21,6 +21,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
+    "@azure/storage-blob": "^12.31.0",
     "@prisma/client": "^6.19.2",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
@@ -35,6 +37,7 @@
     "jsonwebtoken": "^9.0.3",
     "mailgun.js": "^13.0.0",
     "mongoose": "^9.2.1",
+    "multer": "^2.1.1",
     "nodemailer": "^8.0.1",
     "prisma": "^6.19.2",
     "validator": "^13.15.26"

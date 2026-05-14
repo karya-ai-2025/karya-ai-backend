@@ -4,8 +4,37 @@ const EmailTemplate = require('../models/EmailTemplate');
 const UserPlan = require('../models/UserPlan');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const { sendEmail } = require('./mailgunService');
+const { downloadAttachmentBuffer } = require('./blobStorageService');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const stripHtml = (html = '') => html.replace(/<[^>]*>/g, '');
+
+const normalizeAttachmentMetadata = (attachments = []) => {
+  if (!Array.isArray(attachments)) return [];
+
+  return attachments
+    .filter((attachment) => attachment && attachment.blobName)
+    .map((attachment) => ({
+      originalName: attachment.originalName,
+      fileName: attachment.fileName,
+      blobName: attachment.blobName,
+      contentType: attachment.contentType || 'application/octet-stream',
+      size: attachment.size || 0,
+      uploadedAt: attachment.uploadedAt
+    }));
+};
+
+const buildMailAttachments = async (attachments = []) => {
+  if (!attachments.length) return [];
+
+  return Promise.all(attachments.map(async (attachment) => ({
+    filename: attachment.originalName || attachment.fileName || 'attachment',
+    contentType: attachment.contentType || 'application/octet-stream',
+    size: attachment.size,
+    data: await downloadAttachmentBuffer(attachment.blobName)
+  })));
+};
 
 const refundUnusedCredits = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
@@ -51,6 +80,15 @@ const processCampaign = async (campaignId) => {
 
   const emailTemplate = campaign.emailTemplateId;
   if (!emailTemplate) throw new Error('Email template not found for campaign');
+  const templateAttachments = normalizeAttachmentMetadata(emailTemplate.attachments);
+  let cachedMailAttachments = null;
+
+  const getMailAttachments = async () => {
+    if (!cachedMailAttachments) {
+      cachedMailAttachments = buildMailAttachments(templateAttachments);
+    }
+    return cachedMailAttachments;
+  };
 
   const leads = campaign.selectedLeads.filter(
     (lead) => lead.email && lead.email.includes('@')
@@ -94,6 +132,7 @@ const processCampaign = async (campaignId) => {
       leadCompany: lead.company || '',
       personalizedSubject: subject,
       personalizedBody: body,
+      attachments: templateAttachments,
       emailType: 'primary',
       status: 'pending',
       creditsConsumed: campaign.creditsPerEmail || 1
@@ -123,11 +162,15 @@ const processCampaign = async (campaignId) => {
       campaignEmail.queuedAt = new Date();
       await campaignEmail.save();
 
+      const contentType = emailTemplate.settings?.contentType || 'html';
+      const isTextOnly = contentType === 'text';
+      const mailAttachments = await getMailAttachments();
       const result = await sendEmail({
         to: campaignEmail.leadEmail,
         subject: campaignEmail.personalizedSubject,
-        html: campaignEmail.personalizedBody,
-        text: campaignEmail.personalizedBody.replace(/<[^>]*>/g, '')
+        html: isTextOnly ? undefined : campaignEmail.personalizedBody,
+        text: isTextOnly ? campaignEmail.personalizedBody : stripHtml(campaignEmail.personalizedBody),
+        attachments: mailAttachments
       });
 
       campaignEmail.status = 'sent';

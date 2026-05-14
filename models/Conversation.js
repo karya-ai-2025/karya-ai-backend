@@ -35,10 +35,6 @@ const conversationSchema = new mongoose.Schema(
       maxlength: [200, 'Title cannot exceed 200 characters']
     },
     messages: [messageSchema],
-    elevenlabsConversationId: {
-      type: String,
-      default: null
-    },
     status: {
       type: String,
       enum: {

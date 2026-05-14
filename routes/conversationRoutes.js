@@ -6,6 +6,7 @@ const {
   getConversation,
   createConversation,
   addMessage,
+  sendAgentMessage,
   updateConversation,
   deleteConversation
 } = require('../controllers/conversationController');
@@ -22,5 +23,6 @@ router.route('/:id')
   .delete(deleteConversation);
 
 router.post('/:id/messages', addMessage);
+router.post('/:id/agent-message', sendAgentMessage);
 
 module.exports = router;

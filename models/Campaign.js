@@ -227,7 +227,7 @@ const campaignSchema = new mongoose.Schema(
     }],
 
     // Error Tracking
-    errors: [{
+    errorLogs: [{
       message: String,
       timestamp: {
         type: Date,
@@ -333,16 +333,16 @@ campaignSchema.methods.canBeResumed = function () {
 };
 
 campaignSchema.methods.addError = function (message, leadEmail = null, errorType = 'other') {
-  this.errors.push({
+  this.errorLogs.push({
     message,
     leadEmail,
     errorType,
     timestamp: new Date()
   });
 
-  // Keep only last 50 errors to prevent document bloat
-  if (this.errors.length > 50) {
-    this.errors = this.errors.slice(-50);
+  // Keep only last 50 error logs to prevent document bloat
+  if (this.errorLogs.length > 50) {
+    this.errorLogs = this.errorLogs.slice(-50);
   }
 
   return this.save();

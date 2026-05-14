@@ -1,4 +1,5 @@
 const Conversation = require('../models/Conversation');
+const { generateSupportReply } = require('../services/anthropicService');
 
 const getConversations = async (req, res) => {
   try {
@@ -152,15 +153,83 @@ const addMessage = async (req, res) => {
   }
 };
 
+const sendAgentMessage = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const content = typeof req.body.content === 'string' ? req.body.content.trim() : '';
+
+    if (!content) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message content is required'
+      });
+    }
+
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      userId
+    });
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    const userMessage = { role: 'user', content, timestamp: new Date() };
+    conversation.messages.push(userMessage);
+
+    let reply;
+    let warning;
+
+    try {
+      reply = await generateSupportReply({ messages: conversation.messages });
+    } catch (error) {
+      console.error('Support agent error:', error.message);
+      warning = error.code || 'AGENT_RESPONSE_FAILED';
+      reply = error.code === 'ANTHROPIC_NOT_CONFIGURED'
+        ? 'The support agent is not configured yet. Please add ANTHROPIC_API_KEY to the backend environment and restart the server.'
+        : 'I could not reach the support agent right now. Please try again in a moment.';
+    }
+
+    const agentMessage = { role: 'agent', content: reply, timestamp: new Date() };
+    conversation.messages.push(agentMessage);
+
+    conversation.lastActivityAt = new Date();
+    if (conversation.title === 'New conversation') {
+      conversation.title = content.substring(0, 100);
+    }
+
+    await conversation.save();
+
+    res.status(201).json({
+      success: true,
+      data: {
+        userMessage,
+        agentMessage,
+        title: conversation.title,
+        warning
+      }
+    });
+  } catch (error) {
+    console.error('Error sending agent message:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send message to support agent',
+      error: error.message
+    });
+  }
+};
+
 const updateConversation = async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
-    const { title, status, elevenlabsConversationId } = req.body;
+    const { title, status } = req.body;
 
     const updates = {};
     if (title !== undefined) updates.title = title;
     if (status !== undefined) updates.status = status;
-    if (elevenlabsConversationId !== undefined) updates.elevenlabsConversationId = elevenlabsConversationId;
 
     const conversation = await Conversation.findOneAndUpdate(
       { _id: req.params.id, userId },
@@ -225,6 +294,7 @@ module.exports = {
   getConversation,
   createConversation,
   addMessage,
+  sendAgentMessage,
   updateConversation,
   deleteConversation
 };
