@@ -1,4 +1,88 @@
 const EmailTemplate = require('../models/EmailTemplate');
+const {
+  assertUserOwnsAttachmentBlob,
+  deleteAttachmentBlob,
+  uploadAttachmentBuffer
+} = require('../services/blobStorageService');
+
+const MAX_ATTACHMENT_FILE_SIZE_MB = parseInt(process.env.EMAIL_ATTACHMENT_MAX_FILE_SIZE_MB, 10) || 10;
+const MAX_ATTACHMENT_TOTAL_SIZE_MB = parseInt(process.env.EMAIL_ATTACHMENT_MAX_TOTAL_SIZE_MB, 10) || 20;
+const MAX_ATTACHMENT_FILE_SIZE = MAX_ATTACHMENT_FILE_SIZE_MB * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_SIZE = MAX_ATTACHMENT_TOTAL_SIZE_MB * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_TEMPLATE = 5;
+
+const allowedAttachmentMimeTypes = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'text/plain',
+  'text/csv'
+]);
+
+const allowedAttachmentExtensions = new Set([
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.gif',
+  '.txt',
+  '.csv'
+]);
+
+const getFileExtension = (fileName = '') => {
+  const dotIndex = fileName.lastIndexOf('.');
+  return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : '';
+};
+
+const isAllowedAttachmentType = (file) => {
+  return allowedAttachmentMimeTypes.has(file.mimetype) ||
+    allowedAttachmentExtensions.has(getFileExtension(file.originalname));
+};
+
+const normalizeTemplateAttachments = (attachments = [], userId) => {
+  if (!Array.isArray(attachments)) return [];
+
+  if (attachments.length > MAX_ATTACHMENTS_PER_TEMPLATE) {
+    const error = new Error(`A template can include up to ${MAX_ATTACHMENTS_PER_TEMPLATE} attachments`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const totalSize = attachments.reduce((sum, attachment) => sum + (Number(attachment?.size) || 0), 0);
+  if (totalSize > MAX_ATTACHMENT_TOTAL_SIZE) {
+    const error = new Error(`Total attachment size cannot exceed ${MAX_ATTACHMENT_TOTAL_SIZE_MB}MB`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return attachments
+    .filter((attachment) => attachment && attachment.blobName)
+    .map((attachment) => {
+      assertUserOwnsAttachmentBlob(userId, attachment.blobName);
+
+      return {
+        originalName: String(attachment.originalName || attachment.fileName || 'attachment').slice(0, 255),
+        fileName: String(attachment.fileName || attachment.originalName || 'attachment').slice(0, 255),
+        blobName: attachment.blobName,
+        contentType: String(attachment.contentType || 'application/octet-stream').slice(0, 150),
+        size: Number(attachment.size) || 0,
+        uploadedAt: attachment.uploadedAt ? new Date(attachment.uploadedAt) : new Date()
+      };
+    });
+};
 
 // @desc    Get all email templates for a user
 // @route   GET /api/email-templates
@@ -86,6 +170,7 @@ const getEmailTemplate = async (req, res) => {
 // @access  Private
 const createEmailTemplate = async (req, res) => {
   try {
+    const userId = req.user.id || req.user._id;
     const {
       templateName,
       description,
@@ -95,7 +180,8 @@ const createEmailTemplate = async (req, res) => {
       category,
       tags,
       availableVariables,
-      settings
+      settings,
+      attachments
     } = req.body;
 
     // Validate required fields
@@ -112,11 +198,12 @@ const createEmailTemplate = async (req, res) => {
       description,
       subject,
       emailBody,
-      userId: req.user.id,
+      userId,
       templateType: templateType || 'campaign',
       category: category || 'general',
       tags: tags || [],
       availableVariables: availableVariables || [],
+      attachments: normalizeTemplateAttachments(attachments, userId),
       settings: {
         contentType: 'html',
         trackOpens: true,
@@ -135,7 +222,7 @@ const createEmailTemplate = async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating email template:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
       message: 'Failed to create email template',
       error: error.message
@@ -148,9 +235,10 @@ const createEmailTemplate = async (req, res) => {
 // @access  Private
 const updateEmailTemplate = async (req, res) => {
   try {
+    const userId = req.user.id || req.user._id;
     const template = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId: req.user.id,
+      userId,
       isActive: true
     });
 
@@ -164,12 +252,14 @@ const updateEmailTemplate = async (req, res) => {
     // Update allowed fields
     const allowedFields = [
       'templateName', 'description', 'subject', 'emailBody',
-      'templateType', 'category', 'tags', 'availableVariables', 'settings'
+      'templateType', 'category', 'tags', 'availableVariables', 'settings', 'attachments'
     ];
 
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
-        template[field] = req.body[field];
+        template[field] = field === 'attachments'
+          ? normalizeTemplateAttachments(req.body[field], userId)
+          : req.body[field];
       }
     });
 
@@ -182,7 +272,7 @@ const updateEmailTemplate = async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating email template:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
       message: 'Failed to update email template',
       error: error.message
@@ -268,6 +358,7 @@ const previewEmailTemplate = async (req, res) => {
           category: template.category
         },
         preview: previewContent,
+        attachments: template.attachments || [],
         variables: template.variablesInContent,
         wordCount: template.wordCount
       }
@@ -406,6 +497,87 @@ const duplicateEmailTemplate = async (req, res) => {
   }
 };
 
+// @desc    Upload an email template attachment
+// @route   POST /api/email-templates/attachments/upload
+// @access  Private
+const uploadEmailTemplateAttachment = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Attachment file is required'
+      });
+    }
+
+    if (req.file.size > MAX_ATTACHMENT_FILE_SIZE) {
+      return res.status(400).json({
+        success: false,
+        message: `Attachment size cannot exceed ${MAX_ATTACHMENT_FILE_SIZE_MB}MB`
+      });
+    }
+
+    if (!isAllowedAttachmentType(req.file)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unsupported attachment file type'
+      });
+    }
+
+    const attachment = await uploadAttachmentBuffer({
+      userId,
+      file: req.file
+    });
+
+    res.status(201).json({
+      success: true,
+      data: attachment,
+      message: 'Attachment uploaded successfully'
+    });
+  } catch (error) {
+    console.error('Error uploading email template attachment:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: 'Failed to upload attachment',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Delete an uploaded email template attachment
+// @route   DELETE /api/email-templates/attachments
+// @access  Private
+const deleteEmailTemplateAttachment = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { blobName } = req.body;
+
+    if (!blobName) {
+      return res.status(400).json({
+        success: false,
+        message: 'blobName is required'
+      });
+    }
+
+    await deleteAttachmentBlob({
+      userId,
+      blobName
+    });
+
+    res.json({
+      success: true,
+      message: 'Attachment deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting email template attachment:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: 'Failed to delete attachment',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getEmailTemplates,
   getEmailTemplate,
@@ -415,5 +587,7 @@ module.exports = {
   previewEmailTemplate,
   getTemplateCategories,
   getPopularTemplates,
-  duplicateEmailTemplate
+  duplicateEmailTemplate,
+  uploadEmailTemplateAttachment,
+  deleteEmailTemplateAttachment
 };

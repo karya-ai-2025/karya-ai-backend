@@ -3,7 +3,11 @@ const EmailTemplate = require('../models/EmailTemplate');
 const CampaignEmail = require('../models/CampaignEmail');
 const UserPlan = require('../models/UserPlan');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
+const CreditCost = require('../models/CreditCost');
 const { processCampaign, refundUnusedCredits } = require('../services/campaignProcessor');
+const { validateEmailBatch, normalizeEmail } = require('../services/zeroBounceService');
+
+const isEmailLike = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 
 // @desc    Get all campaigns for a user
 // @route   GET /api/campaigns
@@ -149,6 +153,253 @@ const createCampaign = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create campaign',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Validate selected campaign lead emails with ZeroBounce
+// @route   POST /api/campaigns/validate-emails
+// @access  Private
+const validateCampaignEmails = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const leads = Array.isArray(req.body.leads) ? req.body.leads : [];
+
+    const validLeadEmails = leads
+      .map((lead) => {
+        const safeLead = lead || {};
+        return {
+          leadId: safeLead.leadId || safeLead.id || safeLead.email,
+          email: normalizeEmail(safeLead.email),
+          leadName: safeLead.fullName || `${safeLead.firstName || ''} ${safeLead.lastName || ''}`.trim(),
+          leadCompany: safeLead.company || ''
+        };
+      })
+      .filter((lead) => lead.email && isEmailLike(lead.email));
+
+    const uniqueEmails = [...new Set(validLeadEmails.map((lead) => lead.email))];
+    const validationCreditCost = await CreditCost.getCreditCost('VALIDATE_EMAIL');
+    const maxCreditsRequired = uniqueEmails.length * validationCreditCost;
+
+    if (maxCreditsRequired === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid email addresses were provided for validation'
+      });
+    }
+
+    const userPlans = await UserPlan.findActiveByUser(userId);
+    const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
+
+    if (!userPlan) {
+      return res.status(402).json({
+        success: false,
+        message: 'No active plan found. Please subscribe to a plan to validate emails.',
+        creditsRequired: maxCreditsRequired,
+        creditCostPerEmail: validationCreditCost,
+        remainingCredits: 0
+      });
+    }
+
+    if (!userPlan.hasEnoughCredits(maxCreditsRequired)) {
+      const remainingCredits = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+      return res.status(402).json({
+        success: false,
+        message: `Insufficient credits. You need up to ${maxCreditsRequired} credits to validate ${uniqueEmails.length} emails, but you only have ${remainingCredits} credits remaining.`,
+        creditsRequired: maxCreditsRequired,
+        creditCostPerEmail: validationCreditCost,
+        remainingCredits
+      });
+    }
+
+    const { results, errors } = await validateEmailBatch(uniqueEmails);
+
+    const resultByEmail = {};
+    results.forEach((result) => {
+      const email = normalizeEmail(result.address || result.email_address || result.email);
+      if (!email) return;
+
+      resultByEmail[email] = {
+        email,
+        status: result.status || 'unknown',
+        subStatus: result.sub_status || '',
+        isValid: result.status === 'valid',
+        isValidated: true,
+        details: {
+          didYouMean: result.did_you_mean || '',
+          freeEmail: result.free_email,
+          domain: result.domain || ''
+        }
+      };
+    });
+
+    uniqueEmails.forEach((email) => {
+      if (!resultByEmail[email]) {
+        resultByEmail[email] = {
+          email,
+          status: 'unknown',
+          subStatus: '',
+          isValid: false,
+          isValidated: true,
+          details: {}
+        };
+      }
+    });
+
+    const verifiedCount = Object.values(resultByEmail).filter((result) => result.isValidated).length;
+    const validCount = Object.values(resultByEmail).filter((result) => result.isValid).length;
+    const notValidCount = Object.values(resultByEmail).filter((result) => result.isValidated && !result.isValid).length;
+    const creditsConsumed = verifiedCount * validationCreditCost;
+
+    if (creditsConsumed > 0) {
+      userPlan.creditsUsed += creditsConsumed;
+      await userPlan.save();
+
+      await UserCreditConsumption.create({
+        userId,
+        userPlanId: userPlan._id,
+        actionType: 'VALIDATE_EMAIL',
+        creditsConsumed,
+        leadId: `email_validation_${Date.now()}`,
+        metadata: {
+          type: 'EMAIL_VALIDATION',
+          provider: 'zerobounce',
+          requestedEmails: uniqueEmails.length,
+          creditCostPerEmail: validationCreditCost,
+          verifiedEmails: verifiedCount,
+          validEmails: validCount,
+          notValidEmails: notValidCount
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      });
+    }
+
+    const remainingCredits = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+
+    res.json({
+      success: true,
+      data: {
+        results: resultByEmail,
+        errors,
+        summary: {
+          totalSubmitted: uniqueEmails.length,
+          verifiedCount,
+          validCount,
+          notValidCount,
+          creditCostPerEmail: validationCreditCost,
+          creditsConsumed,
+          remainingCredits
+        }
+      },
+      message: `Validated ${uniqueEmails.length} email${uniqueEmails.length !== 1 ? 's' : ''}`
+    });
+  } catch (error) {
+    console.error('Error validating campaign emails:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate emails',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Duplicate campaign as a new draft
+// @route   POST /api/campaigns/:id/duplicate
+// @access  Private
+const duplicateCampaign = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { name } = req.body;
+    const newName = typeof name === 'string' ? name.trim() : '';
+
+    if (!newName) {
+      return res.status(400).json({
+        success: false,
+        message: 'New campaign name is required'
+      });
+    }
+
+    if (newName.length < 2 || newName.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Campaign name must be between 2 and 100 characters'
+      });
+    }
+
+    const originalCampaign = await Campaign.findOne({
+      _id: req.params.id,
+      userId
+    });
+
+    if (!originalCampaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found'
+      });
+    }
+
+    const emailTemplate = await EmailTemplate.findOne({
+      _id: originalCampaign.emailTemplateId,
+      userId,
+      isActive: true
+    });
+
+    if (!emailTemplate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Original campaign email template is no longer available'
+      });
+    }
+
+    const copiedCampaign = new Campaign({
+      name: newName,
+      description: originalCampaign.description || '',
+      userId,
+      status: 'draft',
+      emailTemplateId: originalCampaign.emailTemplateId,
+      selectedLeads: originalCampaign.selectedLeads.map((lead) => ({
+        leadId: lead.leadId,
+        email: lead.email,
+        firstName: lead.firstName || '',
+        lastName: lead.lastName || '',
+        company: lead.company || '',
+        industry: lead.industry || '',
+        jobTitle: lead.jobTitle || '',
+        location: lead.location || '',
+        phoneNumber: lead.phoneNumber || ''
+      })),
+      settings: {
+        sendingRate: originalCampaign.settings?.sendingRate || 100,
+        followUpEnabled: originalCampaign.settings?.followUpEnabled || false,
+        followUpDelayHours: originalCampaign.settings?.followUpDelayHours || 72,
+        followUpTemplateId: originalCampaign.settings?.followUpTemplateId,
+        timeZone: originalCampaign.settings?.timeZone || 'UTC',
+        sendingHours: {
+          start: originalCampaign.settings?.sendingHours?.start ?? 9,
+          end: originalCampaign.settings?.sendingHours?.end ?? 17
+        }
+      },
+      creditsPerEmail: originalCampaign.creditsPerEmail || 1,
+      emailProvider: originalCampaign.emailProvider || 'mailgun',
+      useExistingCreditSystem: originalCampaign.useExistingCreditSystem !== false,
+      tags: originalCampaign.tags || []
+    });
+
+    await copiedCampaign.save();
+    await copiedCampaign.populate('emailTemplateId', 'templateName subject');
+
+    res.status(201).json({
+      success: true,
+      data: copiedCampaign,
+      message: 'Campaign copied successfully'
+    });
+  } catch (error) {
+    console.error('Error duplicating campaign:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to copy campaign',
       error: error.message
     });
   }
@@ -340,7 +591,7 @@ const startCampaign = async (req, res) => {
       Campaign.findByIdAndUpdate(campaign._id, {
         status: 'failed',
         $push: {
-          errors: {
+          errorLogs: {
             message: `Processing failed: ${err.message}`,
             errorType: 'sending',
             timestamp: new Date()
@@ -564,6 +815,8 @@ module.exports = {
   getCampaigns,
   getCampaign,
   createCampaign,
+  validateCampaignEmails,
+  duplicateCampaign,
   updateCampaign,
   deleteCampaign,
   startCampaign,

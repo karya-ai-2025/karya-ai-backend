@@ -28,6 +28,26 @@ const normalizeLead = (lead) => {
   };
 };
 
+const buildCrmResponse = (crmObject) => {
+  const emailLeadCount = (crmObject.leads || []).filter(
+    (lead) => typeof lead.email === 'string' && lead.email.includes('@')
+  ).length;
+
+  return {
+    id: crmObject._id,
+    crmObjectName: crmObject.crmObjectName,
+    totalLeads: crmObject.totalLeads,
+    emailLeadCount,
+    exportFormat: crmObject.exportFormat,
+    source: crmObject.source,
+    searchCriteria: crmObject.searchCriteria || {},
+    metadata: crmObject.metadata || {},
+    createdAt: crmObject.createdAt,
+    updatedAt: crmObject.updatedAt,
+    leads: crmObject.leads || []
+  };
+};
+
 // @desc    Get user CRM objects
 // @route   GET /api/user-crm
 // @access  Private
@@ -39,25 +59,7 @@ const getUserCrmObjects = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const data = crmObjects.map((crmObject) => {
-      const emailLeadCount = (crmObject.leads || []).filter(
-        (lead) => typeof lead.email === 'string' && lead.email.includes('@')
-      ).length;
-
-      return {
-        id: crmObject._id,
-        crmObjectName: crmObject.crmObjectName,
-        totalLeads: crmObject.totalLeads,
-        emailLeadCount,
-        exportFormat: crmObject.exportFormat,
-        source: crmObject.source,
-        searchCriteria: crmObject.searchCriteria || {},
-        metadata: crmObject.metadata || {},
-        createdAt: crmObject.createdAt,
-        updatedAt: crmObject.updatedAt,
-        leads: crmObject.leads || []
-      };
-    });
+    const data = crmObjects.map(buildCrmResponse);
 
     res.json({
       success: true,
@@ -68,6 +70,39 @@ const getUserCrmObjects = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch CRM objects',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get single user CRM object
+// @route   GET /api/user-crm/:id
+// @access  Private
+const getUserCrmObject = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const crmObject = await UserCRM.findOne({
+      _id: req.params.id,
+      userId
+    }).lean();
+
+    if (!crmObject) {
+      return res.status(404).json({
+        success: false,
+        message: 'CRM object not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: buildCrmResponse(crmObject)
+    });
+  } catch (error) {
+    console.error('Error fetching CRM object:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch CRM object',
       error: error.message
     });
   }
@@ -146,7 +181,136 @@ const createUserCrmObject = async (req, res) => {
   }
 };
 
+// @desc    Update user CRM object
+// @route   PUT /api/user-crm/:id
+// @access  Private
+const updateUserCrmObject = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const crmObject = await UserCRM.findOne({
+      _id: req.params.id,
+      userId
+    });
+
+    if (!crmObject) {
+      return res.status(404).json({
+        success: false,
+        message: 'CRM object not found'
+      });
+    }
+
+    const {
+      crmObjectName,
+      leads,
+      exportFormat,
+      searchCriteria,
+      metadata,
+      source
+    } = req.body;
+
+    if (crmObjectName !== undefined) {
+      const trimmedName = typeof crmObjectName === 'string' ? crmObjectName.trim() : '';
+      if (!trimmedName) {
+        return res.status(400).json({
+          success: false,
+          message: 'CRM object name is required'
+        });
+      }
+      crmObject.crmObjectName = trimmedName;
+    }
+
+    if (exportFormat !== undefined) {
+      crmObject.exportFormat = exportFormat;
+    }
+
+    if (source !== undefined) {
+      crmObject.source = source;
+    }
+
+    if (searchCriteria !== undefined) {
+      crmObject.searchCriteria = {
+        industry: searchCriteria.industry || '',
+        company: searchCriteria.company || '',
+        companySegment: searchCriteria.companySegment || '',
+        location: searchCriteria.location || ''
+      };
+    }
+
+    if (metadata !== undefined) {
+      crmObject.metadata = {
+        ...(crmObject.metadata?.toObject?.() || crmObject.metadata || {}),
+        ...metadata
+      };
+    }
+
+    if (leads !== undefined) {
+      if (!Array.isArray(leads) || leads.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'At least one lead is required to update a CRM object'
+        });
+      }
+
+      const normalizedLeads = leads.map(normalizeLead);
+      crmObject.leads = normalizedLeads;
+      crmObject.totalLeads = normalizedLeads.length;
+      crmObject.leadIds = normalizedLeads.map((lead) => lead.leadId).filter(Boolean);
+    }
+
+    await crmObject.save();
+
+    res.json({
+      success: true,
+      message: 'CRM object updated successfully',
+      data: buildCrmResponse(crmObject)
+    });
+  } catch (error) {
+    console.error('Error updating CRM object:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update CRM object',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Delete user CRM object
+// @route   DELETE /api/user-crm/:id
+// @access  Private
+const deleteUserCrmObject = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const crmObject = await UserCRM.findOneAndDelete({
+      _id: req.params.id,
+      userId
+    });
+
+    if (!crmObject) {
+      return res.status(404).json({
+        success: false,
+        message: 'CRM object not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'CRM object deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting CRM object:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete CRM object',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getUserCrmObjects,
-  createUserCrmObject
+  getUserCrmObject,
+  createUserCrmObject,
+  updateUserCrmObject,
+  deleteUserCrmObject
 };

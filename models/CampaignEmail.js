@@ -51,6 +51,35 @@ const campaignEmailSchema = new mongoose.Schema(
       trim: true
     },
 
+    // Snapshot of template attachments at the time this email was queued
+    attachments: [{
+      originalName: {
+        type: String,
+        trim: true,
+        maxlength: 255
+      },
+      fileName: {
+        type: String,
+        trim: true,
+        maxlength: 255
+      },
+      blobName: {
+        type: String,
+        trim: true
+      },
+      contentType: {
+        type: String,
+        default: 'application/octet-stream',
+        trim: true,
+        maxlength: 150
+      },
+      size: {
+        type: Number,
+        min: 0
+      },
+      uploadedAt: Date
+    }],
+
     // Email Type
     emailType: {
       type: String,
@@ -252,7 +281,7 @@ campaignEmailSchema.pre('save', function () {
   }
 
   // Update status based on events
-  if (this.isModified('opens') && this.opens.length > 0 && this.status === 'delivered') {
+  if (this.isModified('opens') && this.opens.length > 0 && ['sent', 'delivered'].includes(this.status)) {
     this.status = 'opened';
   }
 
@@ -274,7 +303,7 @@ campaignEmailSchema.methods.recordOpen = function (ipAddress, userAgent) {
   }
   this.openedAt = new Date();
 
-  if (this.status === 'delivered') {
+  if (['sent', 'delivered'].includes(this.status)) {
     this.status = 'opened';
   }
 

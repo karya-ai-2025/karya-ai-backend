@@ -92,6 +92,42 @@ const emailTemplateSchema = new mongoose.Schema(
       }
     },
 
+    // Files attached to each email sent from this template
+    attachments: [{
+      originalName: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 255
+      },
+      fileName: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 255
+      },
+      blobName: {
+        type: String,
+        required: true,
+        trim: true
+      },
+      contentType: {
+        type: String,
+        default: 'application/octet-stream',
+        trim: true,
+        maxlength: 150
+      },
+      size: {
+        type: Number,
+        required: true,
+        min: 0
+      },
+      uploadedAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
+
     // Template Categories/Tags
     category: {
       type: String,
