@@ -3,7 +3,59 @@
 
 const User = require('../models/User');
 const ExpertProfile = require('../models/ExpertProfile');
+const ProjectCatalog = require('../models/ProjectCatalog');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
+
+const CATEGORY_MAP = {
+  'Digital Marketing':      'outbound',
+  'SEO':                    'traffic',
+  'Content Marketing':      'brand',
+  'Social Media Marketing': 'outreach',
+  'Email Marketing':        'email',
+  'PPC & Paid Ads':         'traffic',
+  'Branding':               'brand',
+  'Marketing Strategy':     'outbound',
+  'Growth Hacking':         'outbound',
+  'PR & Communications':    'brand',
+  'Influencer Marketing':   'outreach',
+  'Video Marketing':        'brand',
+  'Analytics & Data':       'intelligence',
+  'UX/UI Design':           'assistant',
+  'Web Development':        'assistant',
+  'Copywriting':            'email',
+  'Graphic Design':         'brand',
+  'E-commerce Marketing':   'traffic',
+};
+
+async function resolveBestProjectSlug(projectType) {
+  const catalogCat = CATEGORY_MAP[projectType];
+  if (!catalogCat) return null;
+  const project = await ProjectCatalog.findOne({ category: catalogCat, isActive: true, isPublished: true })
+    .sort({ isFeatured: -1, 'stats.completedCount': -1 })
+    .select('slug')
+    .lean();
+  return project?.slug || null;
+}
+
+async function linkExpertToProjects(expertProfileId, linkedSlugs, portfolioItems) {
+  for (const slug of linkedSlugs) {
+    const catalogDoc = await ProjectCatalog.findOne({ slug, isActive: true });
+    if (!catalogDoc) continue;
+    const alreadyLinked = catalogDoc.associatedExperts?.some(
+      ae => ae.expertId?.toString() === expertProfileId.toString()
+    );
+    if (alreadyLinked) continue;
+    const match = portfolioItems.find(p => p.linkedProjectSlug === slug);
+    catalogDoc.associatedExperts.push({
+      expertId:        expertProfileId,
+      portfolioItemId: match?._id || null,
+      contribution:    match?.category || '',
+      isVerified:      false,
+      addedAt:         new Date(),
+    });
+    await catalogDoc.save();
+  }
+}
 
 // ============================================
 // STEP 1: PROFILE SETUP
@@ -319,35 +371,55 @@ const updatePortfolio = asyncHandler(async (req, res, next) => {
   // Update portfolio/case studies
   if (caseStudies && Array.isArray(caseStudies)) {
     const validCaseStudies = caseStudies.filter(cs => cs.title || cs.description);
-    
-    profile.portfolio = validCaseStudies.map(cs => ({
-      title: cs.title?.trim() || '',
-      client: cs.client?.trim() || '',
-      description: cs.description?.trim() || '',
-      results: cs.results?.trim() || '',
-      link: cs.link?.trim() || '',
-      attachments: cs.attachments || [],
-      createdAt: new Date()
-    }));
+
+    const portfolioItems = [];
+    for (const cs of validCaseStudies) {
+      let linkedProjectSlug = cs.linkedProjectSlug || null;
+
+      // If expert picked a projectType but slug not already resolved, look it up now
+      if (!linkedProjectSlug && cs.projectType) {
+        linkedProjectSlug = await resolveBestProjectSlug(cs.projectType);
+      }
+
+      portfolioItems.push({
+        title:             cs.title?.trim()       || '',
+        client:            cs.client?.trim()      || '',
+        description:       cs.description?.trim() || '',
+        results:           cs.results?.trim()     || '',
+        category:          cs.projectType         || '',
+        linkedProjectSlug: linkedProjectSlug      || '',
+        link:              cs.link?.trim()        || '',
+        attachments:       cs.attachments         || [],
+        createdAt:         new Date(),
+      });
+    }
+
+    profile.portfolio = portfolioItems;
   }
-  
+
   // Update social links
   if (links) {
     if (!profile.socialLinks) profile.socialLinks = {};
-    if (links.website) profile.socialLinks.website = links.website.trim();
-    if (links.linkedin) profile.socialLinks.linkedin = links.linkedin.trim();
+    if (links.website)   profile.socialLinks.website   = links.website.trim();
+    if (links.linkedin)  profile.socialLinks.linkedin  = links.linkedin.trim();
     if (links.portfolio) profile.socialLinks.portfolio = links.portfolio.trim();
-    if (links.other) profile.socialLinks.other = links.other.trim();
+    if (links.other)     profile.socialLinks.other     = links.other.trim();
   }
-  
+
   // Mark profile as ready to go public
   if (!profile.profileStatus) profile.profileStatus = {};
-  profile.profileStatus.isPublic = true;
+  profile.profileStatus.isPublic     = true;
   profile.profileStatus.isSearchable = true;
-  profile.profileStatus.lastActive = new Date();
-  
+  profile.profileStatus.lastActive   = new Date();
+
   await profile.save();
-  
+
+  // Link expert to catalog projects derived from portfolio projectTypes
+  const linkedSlugs = [...new Set(profile.portfolio.map(p => p.linkedProjectSlug).filter(Boolean))];
+  if (linkedSlugs.length > 0) {
+    await linkExpertToProjects(profile._id, linkedSlugs, profile.portfolio);
+  }
+
   // Mark onboarding as complete
   if (!user.onboarding) {
     user.onboarding = { expert: { currentStep: 0, completed: false } };
@@ -356,17 +428,17 @@ const updatePortfolio = asyncHandler(async (req, res, next) => {
     user.onboarding.expert = { currentStep: 0, completed: false };
   }
   user.onboarding.expert.currentStep = 4;
-  user.onboarding.expert.completed = true;
+  user.onboarding.expert.completed   = true;
   await user.save({ validateBeforeSave: false });
-  
+
   res.status(200).json({
     success: true,
     message: 'Portfolio saved and onboarding completed!',
     data: {
-      portfolio: profile.portfolio,
-      socialLinks: profile.socialLinks
+      portfolio:   profile.portfolio,
+      socialLinks: profile.socialLinks,
     },
-    onboarding: user.onboarding.expert
+    onboarding: user.onboarding.expert,
   });
 });
 
