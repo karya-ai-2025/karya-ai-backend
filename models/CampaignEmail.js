@@ -129,7 +129,9 @@ const campaignEmailSchema = new mongoose.Schema(
         city: String
       },
       device: {
-        type: String, // desktop, mobile, tablet
+        type: {
+          type: String // desktop, mobile, tablet
+        },
         os: String,
         browser: String
       }
