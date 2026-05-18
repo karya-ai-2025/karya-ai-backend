@@ -14,13 +14,11 @@ const config = {
     cookieExpire: parseInt(process.env.JWT_COOKIE_EXPIRE, 10) || 7
   },
 
-  email: {
-    host: process.env.EMAIL_HOST,
-    port: parseInt(process.env.EMAIL_PORT, 10) || 587,
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-    from: process.env.EMAIL_FROM || 'noreply@karya-ai.com',
-    fromName: process.env.EMAIL_FROM_NAME || 'Karya-AI'
+  mailgun: {
+    apiKey:    process.env.MAILGUN_API_KEY,
+    domain:    process.env.MAILGUN_DOMAIN,
+    fromEmail: process.env.MAILGUN_FROM_EMAIL || 'noreply@karya-ai.com',
+    fromName:  process.env.MAILGUN_FROM_NAME  || 'Karya-AI',
   },
 
   frontendUrl: process.env.FRONTEND_URL,

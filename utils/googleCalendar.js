@@ -30,7 +30,7 @@ async function createMeetEvent({ summary, description, startTime, endTime, atten
   const response = await calendar.events.insert({
     calendarId: process.env.GOOGLE_CALENDAR_ID || 'primary',
     conferenceDataVersion: 1,
-    sendUpdates: 'all',
+    sendUpdates: 'none',
     requestBody: {
       summary,
       description,

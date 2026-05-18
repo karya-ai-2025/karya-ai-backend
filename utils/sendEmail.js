@@ -1,80 +1,77 @@
 // utils/sendEmail.js
-// Email sending utility with Nodemailer
+// Sends emails via Mailgun HTTP API — no extra packages required.
 
-const nodemailer = require('nodemailer');
+const https = require('https');
+const querystring = require('querystring');
 const { config } = require('../config/config');
 
 /**
- * Create email transporter
- */
-const createTransporter = () => {
-  // Development: Use Ethereal (fake SMTP)
-  if (config.env === 'development' && !config.email.host) {
-    return nodemailer.createTransport({
-      host: 'smtp.ethereal.email',
-      port: 587,
-      auth: {
-        user: 'ethereal.user@ethereal.email',
-        pass: 'ethereal_password'
-      }
-    });
-  }
-  
-  // Production: Use configured SMTP
-  return nodemailer.createTransport({
-    host: config.email.host,
-    port: config.email.port,
-    secure: config.email.port === 465,
-    auth: {
-      user: config.email.user,
-      pass: config.email.pass
-    }
-  });
-};
-
-/**
- * Send email
- * @param {Object} options - Email options
- * @param {string} options.to - Recipient email
- * @param {string} options.subject - Email subject
- * @param {string} options.html - HTML content
- * @param {string} options.text - Plain text content (optional)
+ * Send email via Mailgun REST API.
+ * Requires MAILGUN_API_KEY, MAILGUN_DOMAIN, MAILGUN_FROM_EMAIL in .env
  */
 const sendEmail = async (options) => {
-  try {
-    const transporter = createTransporter();
-    
-    const mailOptions = {
-      from: `${config.email.fromName} <${config.email.from}>`,
-      to: options.to,
-      subject: options.subject,
-      html: options.html,
-      text: options.text || options.html.replace(/<[^>]*>/g, '')
-    };
-    
-    const info = await transporter.sendMail(mailOptions);
-    
-    console.log(`📧 Email sent: ${info.messageId}`);
-    
-    // In development, log preview URL
-    if (config.env === 'development') {
-      console.log(`Preview URL: ${nodemailer.getTestMessageUrl(info)}`);
-    }
-    
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error('❌ Email sending failed:', error);
-    throw new Error('Failed to send email');
+  const apiKey  = config.mailgun.apiKey;
+  const domain  = config.mailgun.domain;
+  const fromEmail = config.mailgun.fromEmail;
+  const fromName  = config.mailgun.fromName;
+
+  if (!apiKey || !domain) {
+    console.warn('⚠ Mailgun credentials not configured — email skipped');
+    return { success: false, skipped: true };
   }
+
+  const payload = querystring.stringify({
+    from:    `${fromName} <${fromEmail}>`,
+    to:      options.to,
+    subject: options.subject,
+    html:    options.html,
+    text:    options.text || options.html.replace(/<[^>]*>/g, ''),
+  });
+
+  const auth = Buffer.from(`api:${apiKey}`).toString('base64');
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.mailgun.net',
+        path:     `/v3/${domain}/messages`,
+        method:   'POST',
+        headers:  {
+          Authorization:  `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => (body += chunk));
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            const parsed = JSON.parse(body);
+            console.log(`📧 Email sent via Mailgun: ${parsed.id || parsed.message}`);
+            resolve({ success: true, id: parsed.id });
+          } else {
+            console.error(`❌ Mailgun error ${res.statusCode}: ${body}`);
+            reject(new Error(`Mailgun error ${res.statusCode}: ${body}`));
+          }
+        });
+      }
+    );
+
+    req.on('error', (err) => {
+      console.error('❌ Mailgun request failed:', err.message);
+      reject(err);
+    });
+
+    req.write(payload);
+    req.end();
+  });
 };
 
 // ============================================
 // EMAIL TEMPLATES
 // ============================================
 
-/**
- * Base email template
- */
 const baseTemplate = (content) => `
 <!DOCTYPE html>
 <html>
@@ -162,9 +159,6 @@ const baseTemplate = (content) => `
 </html>
 `;
 
-/**
- * Welcome email template
- */
 const welcomeEmailTemplate = (name) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">Welcome to Karya-AI, ${name}! 🎉</h1>
   <p>We're thrilled to have you on board. You've just joined the smartest way to grow your business with AI-powered marketing.</p>
@@ -175,14 +169,11 @@ const welcomeEmailTemplate = (name) => baseTemplate(`
     <li>Create your first AI-powered marketing roadmap</li>
   </ul>
   <div style="text-align: center;">
-    <a href="${config.frontendUrl}/dashboard" class="button">Get Started</a>
+    <a href="${config.frontendUrl}" class="button">Get Started</a>
   </div>
   <p>Need help? Our support team is always here for you.</p>
 `);
 
-/**
- * Email verification template
- */
 const emailVerificationTemplate = (name, verificationUrl) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">Verify Your Email</h1>
   <p>Hi ${name},</p>
@@ -195,9 +186,6 @@ const emailVerificationTemplate = (name, verificationUrl) => baseTemplate(`
   <p><strong>This link will expire in 24 hours.</strong></p>
 `);
 
-/**
- * Password reset template
- */
 const passwordResetTemplate = (name, resetUrl) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">Reset Your Password</h1>
   <p>Hi ${name},</p>
@@ -211,9 +199,6 @@ const passwordResetTemplate = (name, resetUrl) => baseTemplate(`
   <p>If you didn't request a password reset, please ignore this email or contact support if you have concerns.</p>
 `);
 
-/**
- * Password changed confirmation template
- */
 const passwordChangedTemplate = (name) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">Password Changed Successfully</h1>
   <p>Hi ${name},</p>
@@ -224,9 +209,6 @@ const passwordChangedTemplate = (name) => baseTemplate(`
   </div>
 `);
 
-/**
- * OTP verification template
- */
 const otpTemplate = (name, otp) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">Your Verification Code</h1>
   <p>Hi ${name},</p>
@@ -236,9 +218,6 @@ const otpTemplate = (name, otp) => baseTemplate(`
   <p>Don't share this code with anyone.</p>
 `);
 
-/**
- * Schedule call confirmation template
- */
 const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) => {
   const formattedDate = new Date(dateTime).toLocaleDateString('en-IN', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone,
@@ -270,7 +249,31 @@ const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) =>
   `);
 };
 
-// Export all
+const meetingReminderTemplate = (name, dateTime, timezone, meetLink) => {
+  const formattedDate = new Date(dateTime).toLocaleDateString('en-IN', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone,
+  });
+  const formattedTime = new Date(dateTime).toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short', timeZone: timezone,
+  });
+
+  return baseTemplate(`
+    <h1 style="color:#1a1a1a;margin-bottom:20px;">⏰ Your Meeting Starts in 5 Minutes!</h1>
+    <p>Hi ${name},</p>
+    <p>Just a reminder — your Karya-AI onboarding call is starting very soon.</p>
+    <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:12px;padding:20px;margin:20px 0;">
+      <p style="margin:0 0 8px 0;"><strong>📅 Date:</strong> ${formattedDate}</p>
+      <p style="margin:0;"><strong>🕐 Time:</strong> ${formattedTime}</p>
+    </div>
+    <p>Click below to join the call now:</p>
+    <div style="text-align:center;">
+      <a href="${meetLink}" class="button">Join Google Meet Now</a>
+    </div>
+    <p style="word-break:break-all;color:#8B5CF6;font-size:14px;text-align:center;">${meetLink}</p>
+    <p>See you in a few minutes!</p>
+  `);
+};
+
 module.exports = {
   sendEmail,
   templates: {
@@ -280,5 +283,6 @@ module.exports = {
     passwordChanged: passwordChangedTemplate,
     otp: otpTemplate,
     scheduleCallConfirmation: scheduleCallConfirmationTemplate,
-  }
+    meetingReminder: meetingReminderTemplate,
+  },
 };

@@ -69,15 +69,15 @@ const register = asyncHandler(async (req, res, next) => {
   // Create verification URL
   const verificationUrl = `${config.frontendUrl}/verify-email/${verificationToken}`;
 
-  // Send verification email
+  // Send welcome/confirmation email on account creation
   try {
     await sendEmail({
       to: user.email,
-      subject: 'Verify your Karya-AI account',
-      html: templates.emailVerification(user.fullName, verificationUrl)
+      subject: 'Welcome to Karya-AI! Your account has been created 🎉',
+      html: templates.welcome(user.fullName)
     });
   } catch (error) {
-    console.error('Failed to send verification email:', error);
+    console.error('Failed to send welcome email:', error);
   }
 
   // Populate profiles before sending response

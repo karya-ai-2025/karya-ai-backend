@@ -28,20 +28,18 @@ const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
 const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
-<<<<<<< Updated upstream
-=======
-const campaignRoutes = require('./routes/campaigns'); // Email campaigns
-const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
-const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects
-const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
-const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations
+// const campaignRoutes = require('./routes/campaigns'); // Email campaigns — file not created yet
+// const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates — file not created yet
+// const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects — file not created yet
+// const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks — file not created yet
+// const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations — file not created yet
 const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deliverable negotiations
 const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
->>>>>>> Stashed changes
+const { startReminderJob,   stopReminderJob   } = require('./jobs/reminderJob');
 
 // Validate environment variables
 validateConfig();
@@ -131,16 +129,13 @@ app.use('/api/submissions', submissionRoutes); // Project brief submissions
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
-<<<<<<< Updated upstream
-=======
-app.use('/api/campaigns', campaignRoutes); // Email campaigns
-app.use('/api/email-templates', emailTemplateRoutes); // Email templates
-app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
-app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
-app.use('/api/conversations', conversationRoutes); // Agent conversation history
+// app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet
+// app.use('/api/email-templates', emailTemplateRoutes); // Email templates — file not created yet
+// app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists — file not created yet
+// app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events — file not created yet
+// app.use('/api/conversations', conversationRoutes); // Agent conversations — file not created yet
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
->>>>>>> Stashed changes
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);
@@ -171,6 +166,7 @@ const startServer = async () => {
     
     // Start background jobs
     startTranscriptJob();
+    startReminderJob();
 
     // Start Express server
     const server = app.listen(PORT, () => {

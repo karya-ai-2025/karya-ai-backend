@@ -32,6 +32,16 @@ router.post('/book', [
     const startTime = new Date(dateTime);
     const endTime   = new Date(startTime.getTime() + 30 * 60 * 1000); // 30-minute slot
 
+    // Prevent double booking — one active call per user
+    const existingCall = await ScheduledCall.findOne({ userId: req.user._id, status: 'scheduled' });
+    if (existingCall) {
+      return res.status(400).json({
+        success: false,
+        message: 'You already have a meeting scheduled. Complete your current call before booking a new one.',
+        data: { existingCall },
+      });
+    }
+
     // Create Google Meet event (no-op mock when GCP credentials are not set)
     const { eventId, meetLink, isMock } = await createMeetEvent({
       summary:       `Karya-AI Onboarding Call — ${fullName}`,

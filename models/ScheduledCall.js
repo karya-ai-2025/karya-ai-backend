@@ -15,6 +15,9 @@ const scheduledCallSchema = new Schema({
   // Admin completion
   completedAt: { type: Date, default: null }, // set by admin when call ends
 
+  // Reminder email
+  reminderSent: { type: Boolean, default: false },
+
   // Transcript pipeline
   transcriptFetched: { type: Boolean, default: false },
   fetchAttempts:     { type: Number, default: 0 },
