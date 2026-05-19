@@ -2,7 +2,7 @@ const express = require('express');
 const { query, param, body, validationResult } = require('express-validator');
 const ProjectCatalog = require('../models/ProjectCatalog');
 const ProjectPricing = require('../models/ProjectPricing');
-const ProjectUser = require('../models/ProjectUser');
+const ProjectUser    = require('../models/ProjectUser');
 const ExpertProfile = require('../models/ExpertProfile');
 const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
@@ -144,6 +144,51 @@ router.get('/categories', async (req, res) => {
     res.json({ success: true, data: { categories: counts.map(c => ({ category: c._id, count: c.count })) } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch categories', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/catalog  (PROTECTED)
+// Any logged-in user can create a new catalog project + optional pricing tiers.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/', [
+  protect,
+  body('slug').isString().trim().notEmpty().withMessage('slug is required'),
+  body('title').isString().trim().notEmpty().withMessage('title is required'),
+  body('description').isString().trim().notEmpty().withMessage('description is required'),
+  body('category').notEmpty().withMessage('category is required'),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const { pricingTiers: tiersInput = [], ...catalogData } = req.body;
+
+    const existing = await ProjectCatalog.findOne({ slug: catalogData.slug });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: `Slug "${catalogData.slug}" is already taken`,
+      });
+    }
+
+    const project = await ProjectCatalog.create(catalogData);
+
+    let tiers = [];
+    if (tiersInput.length > 0) {
+      const tierDocs = tiersInput.map((t, i) => ({
+        ...t,
+        projectId:    project._id,
+        displayOrder: t.displayOrder ?? i + 1,
+      }));
+      tiers = await ProjectPricing.insertMany(tierDocs);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Project created successfully',
+      data: { project, tiers },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to create project', error: err.message });
   }
 });
 

@@ -171,20 +171,29 @@ const getExperts = asyncHandler(async (req, res, next) => {
   } = req.query;
 
   // Build query for public profiles only
+  // Soft-launch filter: only show India-based profiles OR manually featured existing ones
   const query = {
     'profileStatus.isPublic': true,
-    'profileStatus.isSearchable': true
+    'profileStatus.isSearchable': true,
+    $or: [
+      { 'location.country': 'India' },
+      { 'profileStatus.isFeatured': true }
+    ]
   };
 
-  // Search filter
+  // Search filter — uses $and to avoid overwriting the soft-launch $or above
   if (search) {
     const searchRegex = new RegExp(search, 'i');
-    query.$or = [
-      { headline: searchRegex },
-      { bio: searchRegex },
-      { 'skills.name': searchRegex },
-      { primaryCategory: searchRegex }
+    query.$and = [
+      { $or: query.$or },
+      { $or: [
+        { headline: searchRegex },
+        { bio: searchRegex },
+        { 'skills.name': searchRegex },
+        { primaryCategory: searchRegex }
+      ]}
     ];
+    delete query.$or;
   }
 
   // Expertise filter

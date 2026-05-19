@@ -32,6 +32,12 @@ const projectCatalogSchema = new Schema({
   },
   duration: { type: String },              // "4–8 weeks", "Ongoing (monthly)"
 
+  // Stage / grouping
+  stageNumber:  { type: Number },          // 1, 2, 3 …
+  stageName:    { type: String },          // "Awareness", "Conversion", etc.
+  projectCode:  { type: String },          // "A-01", "B-03", etc.
+  quote:        { type: String },          // Hero pull-quote shown on card
+
   // Sub-projects / phases
   subProjects: [{ type: String }],
 
@@ -43,6 +49,29 @@ const projectCatalogSchema = new Schema({
   expertSkills:  [{ type: String }],
   targetFor:     [{ type: String }],       // Coaches, B2B SaaS, etc.
   matchIndustries: [{ type: String }],
+
+  // Problem + AI/Human split
+  businessChallenge:  { type: String },    // The core pain this project solves
+  aiWorkflow:         [{ type: String }],  // What the AI does ("Drafts content", "Schedules distribution"…)
+  expertEnsures:      [{ type: String }],  // What the expert is responsible for ("Brand voice integrity"…)
+  humanApprovalTasks: [{ type: String }],  // Decisions that require human sign-off
+  expertProfileDesc:  { type: String },    // Ideal expert background (prose paragraph)
+
+  // Outcomes & success metrics
+  outcomes:     [{ type: String }],        // Quantified results ("8–12 pieces/month, 20%+ MoM traffic"…)
+  guarantees:   [{ type: String }],        // Promises ("Consistent brand voice"…)
+  kpis:         [{ type: String }],        // Tracked metrics ("Organic traffic growth"…)
+  pricingModel: { type: String },          // How it's billed ("Per piece + monthly retainer"…)
+  roi:          { type: String },          // ROI framing ("1 lead/mo = $3–8K vs $1,200/mo cost")
+
+  // Milestones — ordered delivery checkpoints
+  milestones: [{
+    label:       { type: String },         // "Week 1", "Month 2", etc.
+    description: { type: String },         // "ICP doc + 30-day calendar approved"
+  }],
+
+  // Dependencies — prerequisite tools, data, or projects
+  dependencies: [{ type: String }],
 
   // FAQ
   faq: [{

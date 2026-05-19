@@ -100,11 +100,13 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * Restrict access to specific roles
+ * Restrict access to specific roles.
+ * isAdmin: true always passes through regardless of activeRole.
  */
 const restrictTo = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    if (req.user.isAdmin) return next();
+    if (!roles.includes(req.user.activeRole)) {
       return next(
         new AppError('You do not have permission to perform this action.', 403)
       );

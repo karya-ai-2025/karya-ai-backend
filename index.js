@@ -36,6 +36,8 @@ const submissionRoutes = require('./routes/submissionRoutes'); // Project brief 
 const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deliverable negotiations
 const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
+const adminRoutes       = require('./routes/adminRoutes');        // Admin analytics & management
+const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
@@ -127,6 +129,7 @@ app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
+app.use('/api/resources',   resourceRoutes);    // Resource hub — must be before /api planRoutes (which has global protect)
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 // app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet
@@ -136,6 +139,7 @@ app.use('/api/credits', creditRoutes); // Credit consumption tracking
 // app.use('/api/conversations', conversationRoutes); // Agent conversations — file not created yet
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
+app.use('/api/admin',       adminRoutes);       // Admin analytics & management
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);

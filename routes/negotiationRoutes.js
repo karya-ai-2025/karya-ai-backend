@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const ProjectNegotiation = require('../models/ProjectNegotiation');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, restrictTo } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -93,10 +93,9 @@ router.get('/my/:projectSlug', [
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/negotiations
-// All negotiations from all users — for the admin review page
-// (No auth for now — to be secured later)
+// All negotiations from all users — admin only
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/', async (req, res) => {
+router.get('/', [protect, restrictTo('admin')], async (req, res) => {
   try {
     const negotiations = await ProjectNegotiation.find()
       .populate('userId', 'fullName email')
@@ -112,9 +111,9 @@ router.get('/', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/negotiations/:id/status
 // Admin approves or rejects a negotiation
-// (No auth for now — to be secured later)
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id/status', [
+  protect, restrictTo('admin'),
   param('id').isString().trim(),
   body('status').isIn(['approved', 'rejected']).withMessage('status must be approved or rejected'),
   handleValidation,
@@ -145,9 +144,9 @@ router.patch('/:id/status', [
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/negotiations/:id
 // Admin clears (permanently deletes) a negotiation so the user can re-submit
-// (No auth for now — to be secured later)
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', [
+  protect, restrictTo('admin'),
   param('id').isString().trim(),
   handleValidation,
 ], async (req, res) => {

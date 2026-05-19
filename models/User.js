@@ -138,7 +138,10 @@ const userSchema = new mongoose.Schema(
       emailNotifications: { type: Boolean, default: true },
       smsNotifications: { type: Boolean, default: false },
       marketingEmails: { type: Boolean, default: true }
-    }
+    },
+
+    // Admin access — independent of activeRole so normal platform usage is unaffected
+    isAdmin: { type: Boolean, default: false }
   },
   {
     timestamps: true,
