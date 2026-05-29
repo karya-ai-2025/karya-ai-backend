@@ -33,6 +33,8 @@ const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templat
 const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects
 const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
 const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations
+const agentRoutes = require('./routes/agentRoutes'); // LangGraph agent workflow
+const paymentRoutes = require('./routes/paymentRoutes'); // Cashfree payment routes
 
 // Validate environment variables
 validateConfig();
@@ -123,12 +125,14 @@ app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
 app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth) — must be before planRoutes
+app.use('/api/payments', paymentRoutes); // Payment gateway order creation and verification
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
+app.use('/api/agent', agentRoutes); // Five-phase agent workflow
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);

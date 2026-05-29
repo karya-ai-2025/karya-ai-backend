@@ -1,46 +1,82 @@
 # Karya AI Agent: Five Phase Plan
 
-This document explains how the Karya AI agent should work at a high level.
+This document explains how the Karya AI agent works at a high level.
 
-The goal is to build Multi agent system that helps users move from onboarding to project selection and expert matching.
+The goal is to move a user through a clear linear path:
 
-For the first version, we will keep the system simple:
+```text
+create account if needed
+collect important business details
+confirm goal
+review business context from website
+show areas where Karya AI can help
+ask user to generate the final plan
+create 30-60-90 day growth plan
+recommend the first marketplace project to pick
+generate a modern PPT
+answer direct service or project recommendation requests
+later: match expert and ask for human approval
+```
+
+The first version uses:
 
 ```text
 Next.js Agent UI
   -> Node.js backend API
     -> LangGraph.js workflow
       -> MongoDB / Mongoose data
-      -> Anthropic model
-      -> Karya platform tools
+      -> Anthropic Claude model
+      -> ProjectCatalog marketplace data
+      -> AgentProjectRecommendation recommendation history
 ```
 
-## Simple Definitions
+## Returning User Memory
 
-### Agent
-
-In our system, an agent is a LangGraph node.
-
-Each node has one clear job.
-
-Examples:
+The agent stores a compact memory summary in:
 
 ```text
-memory_agent_node      -> collects and updates user data
-orchestrator_node      -> replies to the user and decides the next step
-diagnostic_agent_node  -> finds sales and marketing gaps
-planner_agent_node     -> creates the 30-60-90 day plan
-router_agent_node      -> matches a project to an expert
-human_gate_node        -> waits for approval
+Conversation.agentState.memorySummary
 ```
 
-### State
+This summary captures:
 
-State is the object passed between LangGraph nodes during a conversation.
+```text
+what profile details were collected
+whether the goal was confirmed
+whether website context was reviewed
+areas where Karya AI can help
+whether the 30-60-90 plan was generated
+the first recommended project
+whether a PPT exists
+the next suggested action
+```
 
-It contains the current working data for the agent.
+When a user opens the same conversation later, the frontend can show a welcome-back message from `memorySummary.welcomeBackMessage`.
 
-Example:
+The full chat history remains stored in `Conversation.messages`, but the memory summary gives the agent a quick understanding of what was already covered.
+
+## Nodes
+
+In this system, an agent is a LangGraph node.
+
+```text
+intent_router_node       -> detects interruptions and restarts the right phase
+memory_agent_node        -> extracts identity, profile, goal, and website URL data
+orchestrator_node        -> asks the next question and controls the linear path
+diagnostic_planner_node  -> internal name; manages website intake and website summary confirmation
+diagnostic_agent_node    -> internal name; scores business gaps, maps weakest areas to ProjectCatalog subjects, and stores project recommendations
+planner_agent_node       -> creates the 30-60-90 plan using deterministic gap-based marketplace recommendations
+router_agent_node        -> future expert matching
+human_gate_node          -> future human approval
+```
+
+Internal node names still use older names in code to avoid graph churn. The UI should not show the word "diagnostic"; it should say "business review", "website summary", and "growth plan".
+
+The intent router also supports quick marketplace requests. If the user directly asks for a project, service, tool, or solution for a specific outcome, it routes to `find_marketplace_project`.
+
+## State
+
+State is passed between LangGraph nodes during a conversation.
 
 ```js
 {
@@ -52,298 +88,65 @@ Example:
   businessProfile,
   expertProfile,
   goal,
+  businessEvidence,
   gapScores,
+  businessReview,
   plan,
+  marketplaceProjectMatches,
+  businessReview.recommendedProjects,
+  memorySummary,
   selectedProject,
   matchedExpert,
-  activeGate, // current approval step, if any
+  activeGate,
+  interruptIntent,
+  resetReason,
   nextAction
 }
 ```
 
-### KB
-
-KB means Knowledge Base.
-
-For our first version, KB means structured data stored in MongoDB/Mongoose and loaded into LangGraph state.
-
-There are two types of KB:
+## Linear Flow
 
 ```text
-User KB:
-Data about a specific user, business, or expert.
-
-Platform KB:
-Karya platform knowledge such as projects, sales and marketing playbooks, FAQs, rules, and expert matching logic.
+1. If the user is not logged in, collect identity and show secure password signup.
+2. Ask whether the user is a business user or expert user.
+3. For business users, collect important business profile fields.
+4. Ask for the business goal.
+5. Confirm the goal.
+6. Ask whether the user wants to share a website URL.
+7. Crawl and summarize the website if provided.
+8. Show the website summary and ask for confirmation or edits.
+9. Sort the lowest individual gap scores and match projects through `ProjectCatalog.subjects`.
+10. Ask the user to click Generate Plan.
+11. Create the 30-60-90 day plan only after that click.
+12. Reuse the stored gap-based recommendations and mark the first project to pick.
+13. Generate a PPT for the business user with scores, gap areas, matched subjects, and projects.
 ```
 
-For now, we do not need a separate long-term memory system.
+## Business Profile Fields
 
-We can use:
-
-```text
-MongoDB / Mongoose = saved data
-LangGraph state = temporary working data during a chat turn
-```
-
-### Memory
-
-Memory means data the agent remembers across sessions.
-
-For the first version, this can simply come from MongoDB collections like:
-
-```text
-User
-BusinessProfile
-ExpertProfile
-Conversation
-Project
-ExpertProfile
-```
-
-## Core Architecture
-
-We will build one LangGraph.js workflow inside the existing Node.js backend.
-
-The frontend will not run the agent.
-
-The frontend will only:
-
-```text
-1. Show the chat UI.
-2. Send user messages to backend.
-3. Render agent responses.
-4. Show approval UI when needed.
-```
-
-The backend will:
-
-```text
-1. Load user data from MongoDB.
-2. Build the LangGraph state.
-3. Run the graph.
-4. Save updated data back to MongoDB.
-5. Return the response to the frontend.
-```
-
-High-level graph:
-
-```text
-START
-  -> memory_agent_node
-  -> orchestrator_node
-  -> route by nextAction
-      -> diagnostic_agent_node
-      -> planner_agent_node
-      -> router_agent_node
-      -> human_gate_node
-      -> END
-```
-
-Nodes do not call each other directly.
-
-Each node reads the shared state and writes its own updates.
-
-The graph router decides which node runs next.
-
-## Main Routing Field
-
-The main field for routing should be `nextAction`.
-
-```js
-nextAction:
-  | "ask_field"
-  | "define_goal"
-  | "run_diagnostic"
-  | "run_planner"
-  | "run_router"
-  | "await_human"
-  | "respond"
-```
-
-Simple routing logic:
-
-```text
-If profile is incomplete:
-  ask the next onboarding question
-
-If profile is complete enough but goal is missing:
-  define the goal
-
-If goal is confirmed:
-  run diagnostic
-
-If diagnostic is ready:
-  create plan
-
-If user selects a project:
-  match expert
-
-If approval is needed:
-  wait for human decision
-```
-
-## Phase 1: Knowledge Base and Onboarding
-
-### Purpose
-
-The agent collects important information about the user.
-
-Before collecting business or expert details, the system must first have basic identity data.
-
-Minimum identity data:
-
-```text
-name
-email
-phone number
-password
-user type: business user or expert user
-```
-
-This is needed so the backend can create or update the correct database records.
-
-Because the agent page is public, the user must be able to create an account during onboarding.
-
-Password must be handled carefully:
-
-```text
-The password should be entered in a secure password input.
-The password should go directly to the backend auth API.
-The password should not be sent to the AI model.
-The password should not be stored in conversation messages.
-The backend should hash the password before saving the user.
-```
-
-This phase supports two user types:
-
-```text
-Business user
-Expert user
-```
-
-For a business user, the agent collects:
+For business users, the minimum fields required before goal planning are:
 
 ```text
 company name
 website
 industry
 target customer
+```
+
+The agent may also collect optional planning context when the user provides it:
+
+```text
 current sales and marketing channels
 budget
 constraints
 desired outcome
 ```
 
-For an expert user, the agent collects:
+These are saved to `BusinessProfile` and mirrored into LangGraph state.
 
-```text
-skills
-industries served
-project experience
-availability
-capacity
-preferred project types
-portfolio or proof
-```
+## Goal Definition
 
-### Main Nodes
-
-```text
-memory_agent_node
-orchestrator_node
-```
-
-### What memory_agent_node Does
-
-This node reads the latest user message and extracts useful fields.
-
-It should first make sure the minimum identity data exists.
-
-If identity data is missing, it should collect that before saving business or expert profile details.
-
-Example:
-
-User says:
-
-```text
-We are a B2B SaaS company selling to HR teams in the US.
-```
-
-The node can update:
-
-```js
-{
-  industry: "B2B SaaS",
-  targetCustomer: "HR teams",
-  geography: "US"
-}
-```
-
-It should then save the updated profile to MongoDB.
-
-### What orchestrator_node Does
-
-This node talks to the user.
-
-It decides the next best question.
-
-It should ask only one main question at a time.
-
-Example:
-
-```text
-Thanks. What is the main outcome you want to achieve in the next 90 days?
-```
-
-### Phase 1 Routing
-
-```text
-If name, email, or phone number is missing:
-  ask for the missing identity field
-
-If password is missing:
-  show a secure password input and send it directly to the backend auth API
-
-If user type is missing:
-  ask if they are a business user or expert user
-
-If business profile is incomplete:
-  ask the next business onboarding question
-
-If expert profile is incomplete:
-  ask the next expert onboarding question
-
-If enough information is collected:
-  move to Phase 2
-```
-
-### Data Saved
-
-```text
-User
-BusinessProfile
-ExpertProfile
-Conversation
-```
-
-Recommended database flow:
-
-```text
-1. Create or find User by email or authenticated user ID.
-2. Save name, email, phone number, hashed password, and user type.
-3. If user type is business user, create or update BusinessProfile.
-4. If user type is expert user, create or update ExpertProfile.
-5. Save conversation messages against the user and conversation.
-```
-
-## Phase 2: Goal Definition
-
-### Purpose
-
-The agent helps the user define a clear goal.
-
-For business users, the goal should usually be a 30, 60, or 90 day business outcome.
+The goal should be specific enough to plan against.
 
 Examples:
 
@@ -353,72 +156,80 @@ Improve outbound reply rate from 2 percent to 6 percent.
 Build a predictable founder-led sales process.
 ```
 
-For expert users, the goal may be about matching preferences.
-
-Examples:
+Goal details are saved in:
 
 ```text
-Get matched with outbound strategy projects.
-Work with B2B SaaS companies for 10 hours per week.
+Conversation.agentState.goal
+BusinessProfile.marketingActivities.goalsObjectives
 ```
 
-### Main Node
+The frontend renders `uiRequest.type = "goal_confirmation"` as a goal review card.
+
+## Website Business Review
+
+After the goal is confirmed, the agent asks for an optional website URL.
+
+The user can:
 
 ```text
-orchestrator_node
+share one or more public website URLs
+skip the website URL
+create the growth plan from profile + goal only
 ```
 
-### What orchestrator_node Does
+There is no document upload in this flow.
 
-The node checks whether the user has a clear goal.
+There is no Azure Blob Storage or Azure Document Intelligence dependency for this agent flow.
 
-If the goal is unclear, it asks one follow-up question.
+## Website Crawling
 
-If the goal is clear, it asks the user to confirm it.
+Website crawling is done by backend code, not by Claude.
 
-Example goal object:
-
-```js
-{
-  type: "pipeline",
-  description: "Book 20 qualified demos in 90 days",
-  timeframeDays: 90,
-  targetMetric: "20 qualified demos",
-  confirmed: true
-}
-```
-
-### Phase 2 Routing
+Backend flow:
 
 ```text
-If profile is still incomplete:
-  return to Phase 1
-
-If goal is missing:
-  ask for the desired outcome
-
-If goal is unclear:
-  ask one follow-up question
-
-If goal is confirmed:
-  move to Phase 3
+1. Normalize the URL.
+2. Reject private or local URLs.
+3. Fetch the homepage with server-side fetch.
+4. Find useful internal links.
+5. Prefer pages like about, services, solutions, pricing, case studies, and contact.
+6. Fetch those pages.
+7. Strip scripts, styles, and HTML.
+8. Keep readable text.
+9. Send extracted text to Claude for a business summary and signals.
+10. Save URL, extracted text, summary, signals, and crawl metadata to AgentEvidence.
 ```
 
-### Data Saved
+Claude only summarizes extracted website text. Claude does not crawl the website.
+
+## Website Summary Confirmation
+
+After crawling, the user sees what the agent understood.
+
+The user can:
 
 ```text
-Goal details
-Goal confirmation status
-Conversation history
+confirm the website summary and continue to help areas
+edit the summary
+share another website
+create the plan without more website context
 ```
 
-## Phase 3: Gap Diagnostic
+After confirmation, the agent does not immediately generate the full 30-60-90 plan.
 
-### Purpose
+It first shows:
 
-The agent checks where the business has gaps.
+```text
+areas where Karya AI can help
+why each area matters
+which marketplace project can help with each area
+```
 
-For business users, it can score these sales and marketing areas:
+Then the UI shows `Generate Plan`.
+
+## Gap Review
+
+The internal gap node scores:
 
 ```text
 Awareness
@@ -429,418 +240,233 @@ Convert
 Retain
 ```
 
-This phase helps the user understand what is weak, what is working, and where Karya can help.
+The score is used to create the plan. User-facing copy should call this a business review or gap review.
 
-For expert users, this phase may be different. Instead of sales and marketing scoring, we may check profile quality and matching readiness.
-
-### Main Nodes
+Project recommendations do not use `overallScore` as the main decision point. The backend sorts the individual area scores from lowest to highest. Lower score means bigger gap:
 
 ```text
-diagnostic_agent_node
-orchestrator_node
+connect: 2
+retain: 3
+qualify: 4
+discovery: 6
+convert: 7
+awareness: 8
 ```
 
-### What diagnostic_agent_node Does
+In this example, the recommendation priorities are `connect`, `retain`, and `qualify`.
 
-This node reads:
+Each gap area has a deterministic subject-keyword map:
 
 ```text
-business profile
-confirmed goal
-conversation history
-platform knowledge, if available
+awareness -> Brand Positioning, Content Strategy, Market Visibility, Social Proof, Website Messaging
+discovery -> Lead Generation, ICP Strategy, Data Research, Market Research, Customer Research
+connect   -> Cold Outreach, Cold Email, Email Campaigns, Prospecting, Outbound
+qualify   -> Lead Qualification, ICP Research, CRM Workflow, Sales Qualification
+convert   -> Landing Page Optimization, Conversion Optimization, Sales Assets, Case Studies
+retain    -> Customer Retention, CRM Follow Up, Nurture Campaigns, Relationship Management
 ```
 
-It produces a structured diagnosis.
+The backend searches those mapped values against `ProjectCatalog.subjects`, ranks subject matches with business goal and marketplace signals, and returns at least three recommendations when catalog inventory allows.
 
-Example:
-
-```js
-{
-  awareness: { score: 5, signals: ["content exists but not consistent"] },
-  discovery: { score: 4, signals: ["website has weak conversion path"] },
-  connect: { score: 3, signals: ["no clear outbound system"] },
-  qualify: { score: 6, signals: ["basic qualification process exists"] },
-  convert: { score: 5, signals: ["case studies are missing"] },
-  retain: { score: 4, signals: ["no clear referral motion"] },
-  overallScore: 4.5
-}
-```
-
-### What orchestrator_node Does
-
-It explains the diagnosis to the user in simple language.
-
-It should focus on the biggest gaps.
-
-It should not overload the user with too many details.
-
-### Phase 3 Routing
+Each recommendation is persisted to `agent_project_recommendations` with:
 
 ```text
-If goal is not confirmed:
-  return to Phase 2
-
-If diagnostic already exists for the same goal:
-  reuse it
-
-If diagnostic is missing:
-  run diagnostic_agent_node
-
-After diagnostic is ready:
-  move to Phase 4
+userId
+conversationId
+businessGoal
+requirementSummary
+gapArea
+gapScore
+searchedSubjects
+matchedSubjects
+recommended project id / slug / title
+priority
+matchScore
+reason
+gapSnapshot
+recommendationRunId
 ```
 
-### Data Saved
+## 30-60-90 Day Plan
+
+The planner creates:
 
 ```text
-Gap scores
-Gap signals
-Diagnostic result
-Goal linked to diagnostic
-```
-
-## Phase 4: Plan Generation
-
-### Purpose
-
-The agent turns the diagnosis into a 30-60-90 day action plan.
-
-The plan should recommend Karya projects that can help the user reach their goal.
-
-The plan should include:
-
-```text
-recommended projects
-why each project matters
-expected output
-30, 60, or 90 day timing
+plan summary
+top gaps
+30 day actions and outputs
+60 day actions and outputs
+90 day actions and outputs
 3 KPIs
+recommended marketplace projects
+first project to pick
 ```
 
-### Main Nodes
+The planner loads active published marketplace projects from `ProjectCatalog`.
 
-```text
-planner_agent_node
-orchestrator_node
-```
+The deterministic recommendations produced during the gap review are the source of truth for the plan. Claude can still generate the narrative plan, but backend normalization keeps the gap-based project recommendations first.
 
-### What planner_agent_node Does
-
-This node reads:
-
-```text
-business profile
-confirmed goal
-gap diagnostic
-project catalogue
-budget or constraints
-```
-
-It creates a plan.
-
-Example:
+The backend normalizes recommendations so the final plan points to real marketplace projects:
 
 ```js
 {
-  planId: "plan_123",
-  diagnosis: "The biggest issue is weak outbound foundation.",
-  projects: [
-    {
-      slug: "contact-intelligence",
-      title: "Contact Intelligence",
-      phase: "30 days",
-      priority: 1,
-      rationale: "The user needs a better target account and contact base."
-    },
-    {
-      slug: "email-engine",
-      title: "Email Engine",
-      phase: "60 days",
-      priority: 2,
-      rationale: "The user needs a repeatable outbound email motion."
-    }
-  ],
-  kpis: [
-    { name: "qualified demos", target: "20 in 90 days" },
-    { name: "reply rate", target: "6 percent" },
-    { name: "lead quality", target: "sales team rates leads above 7/10" }
-  ]
+  slug,
+  title,
+  phase,
+  priority,
+  gapArea,
+  gapScore,
+  searchedSubjects,
+  matchedSubjects,
+  matchScore,
+  rationale,
+  expectedOutput,
+  marketplaceUrl: "/project-marketplace/<slug>"
 }
 ```
 
-### What orchestrator_node Does
+The frontend plan card shows recommended projects and highlights priority 1 as "Start here".
 
-It presents the plan to the user.
+Recommended project links open in a new browser tab so the user does not lose the generated plan conversation.
 
-It explains why the projects were selected.
-
-It asks the user which project they want to start with.
-
-### Phase 4 Routing
+Frontend behavior:
 
 ```text
-If diagnostic is missing:
-  return to Phase 3
-
-If plan already exists for the current diagnostic:
-  reuse it
-
-If plan is missing:
-  run planner_agent_node
-
-If user changes the goal:
-  clear old diagnostic and plan
-
-If user selects a project:
-  move to Phase 5
+click recommended project
+open marketplace URL in new tab
+keep current agent plan visible in the original tab
 ```
 
-### Data Saved
+## PPT Generation
+
+When the final plan is generated, the backend also creates a PPTX file.
+
+The PPT is generated by backend code in `services/agent/pptxService.js`.
+
+It is dependency-free:
 
 ```text
-Plan
-Recommended projects
-KPIs
-Selected project, when user chooses one
+no external PPT library
+backend writes the PPTX XML parts
+backend zips those parts into a .pptx file
+frontend receives base64 and shows Download PPT
 ```
 
-## Phase 5: Project Selection and Expert Match
-
-### Purpose
-
-The agent moves the user from advice to execution.
-
-When the user selects a project, the system matches that project with the best available expert.
-
-Before anything is confirmed, the system should ask for human approval.
-
-This is important because project and expert matching affects real users and experts.
-
-### Main Nodes
+The PPT includes:
 
 ```text
-router_agent_node
-human_gate_node
-orchestrator_node
+Slide 1: Karya AI x <Company Name>
+Slide 2: Business snapshot
+Slide 3: Gap score analysis
+Slide 4: Areas where Karya AI can help, with gap scores and matched subjects
+One slide per recommended project
+30-60-90 roadmap slide
+Next step slide
 ```
 
-### What router_agent_node Does
+The PPT should feel like a modern business deck, not a plain text export.
 
-This node reads:
+Current slide design:
 
 ```text
-selected project
-business profile
-plan KPIs
-expert profiles
-expert availability
-expert capacity
+branded dark cover slide
+colored top accent bars
+large clean headings
+white card-style content blocks
+soft shadows
+colored project recommendation tags
+three-column 30-60-90 roadmap layout
+final next-step slide
 ```
 
-It then:
+The frontend shows a `Download PPT` button on the plan card.
+
+## Frontend Plan UI
+
+The frontend renders the final plan from `uiRequest.type = "plan_summary"`.
+
+It shows:
 
 ```text
-filters experts
-scores matching experts
-selects the best expert
-creates a project brief
-creates an approval gate
+plan summary
+30-60-90 timeline cards
+KPI chips
+recommended marketplace projects
+Start here label for priority 1
+Download PPT button
 ```
 
-The first version should keep matching mostly rule-based.
-
-Example matching logic:
+Recommended project cards are clickable links.
 
 ```text
-Only consider experts who are active and available.
-Only consider experts who have capacity.
-Score experts by skill match and segment match.
-Pick the highest scoring expert.
+href: project.marketplaceUrl or /project-marketplace/<slug>
+target: _blank
+rel: noopener noreferrer
 ```
 
-### What human_gate_node Does
+This lets the user inspect or start a marketplace project without losing the chat state.
 
-This node handles approval.
+## Direct Project / Service Matching
 
-It should support:
-
-```text
-approved
-rejected
-escalated
-```
-
-If approved, the project can move forward.
-
-If rejected, the system should find another expert or return to planning.
-
-If escalated, an admin should handle it manually.
-
-### What orchestrator_node Does
-
-It tells the user what happened.
+The user can ask for a project recommendation before completing the full business profile.
 
 Examples:
 
 ```text
-Your project has been approved and the expert match is ready.
+I need a service for cold emails.
+Which project can help me create campaigns?
+What should I use for lead generation?
+I want something to improve reply rate.
 ```
+
+The agent should give useful recommendations immediately, then ask for more context for a specialized recommendation.
+
+Backend behavior:
 
 ```text
-This match needs review. Our team will handle it manually.
+1. intent_router_node detects find_marketplace_project.
+2. orchestrator_node calls ProjectCatalog matching.
+3. backend loads active published marketplace projects.
+4. matcher scores projects against the user's request.
+5. matcher uses title, category, tagline, description, deliverables, subjects, tools, skills, target audience, industries, and success proof.
+6. matcher expands common terms, such as cold email -> outbound, outreach, campaign, lead, prospecting, reply.
+7. top matches are returned to the frontend.
 ```
 
-### Phase 5 Routing
+Frontend behavior:
 
 ```text
-If no project is selected:
-  stay in Phase 4
-
-If project is selected:
-  run router_agent_node
-
-If expert is matched:
-  create activeGate with status "pending"
-
-activeGate means there is an approval step waiting for a user, expert, or admin.
-
-If gate is pending:
-  frontend shows approval UI
-
-If gate is approved:
-  confirm project activation
-
-If gate is rejected:
-  match another expert or return to plan
-
-If gate is escalated:
-  stop automated flow and notify admin
+uiRequest.type = "project_match"
+show recommended project cards
+show why each project matches
+show output / KPI signal chips
+open project links in a new tab
 ```
 
-### Data Saved
+After showing matches, the agent asks the user to provide business type, website, target customer, and goal to get a more specialized recommendation and plan.
 
-```text
-Selected project
-Matched expert
-Project brief
-Approval gate
-Gate history
-Assignment status
-```
-
-## Backend API Plan
-
-The backend should expose simple agent APIs.
+## APIs
 
 ```text
 POST /api/agent/chat
 GET  /api/agent/thread/:conversationId/state
+GET  /api/agent/thread/:conversationId/evidence
+POST /api/agent/evidence/website
 POST /api/agent/gate/respond
-```
-
-### POST /api/agent/chat
-
-Used when the user sends a chat message.
-
-Request:
-
-```js
-{
-  conversationId,
-  message
-}
-```
-
-Backend flow:
-
-```text
-1. Check if the user is already logged in.
-2. If not logged in, collect basic signup data first.
-3. Send password only through a secure password input to the backend auth API.
-4. Create or find the User record.
-5. Load conversation and profile from MongoDB.
-6. Build LangGraph state.
-7. Run the graph.
-8. Save updated profile and messages.
-9. Return assistant response.
-```
-
-### GET /api/agent/thread/:conversationId/state
-
-Used when the frontend needs current agent state.
-
-This is useful for showing:
-
-```text
-current phase
-profile progress
-active approval gate
-selected project
-matched expert
-```
-
-### POST /api/agent/gate/respond
-
-Used when a user, expert, or admin approves or rejects an action.
-
-Request:
-
-```js
-{
-  conversationId,
-  gateId,
-  action: "approved" | "rejected" | "escalated",
-  notes
-}
-```
-
-## Frontend Plan
-
-The existing page should stay as the main agent UI:
-
-```text
-karya-ai-frontend/src/app/agent/page.jsx
-```
-
-For the first version, the frontend should:
-
-```text
-show chat messages
-send user messages to backend
-show secure password input during public signup
-show loading state
-render markdown response
-show approval UI if activeGate exists
 ```
 
 ## Environment Variables
 
-For the first version, use one Anthropic model for all nodes that need the model.
-
-LangGraph does not need a model API key by itself.
-
-The model provider needs the API key.
-
-For our current backend, that provider is Anthropic.
-
-### Required for First Version
+Required:
 
 ```env
-# App runtime
 NODE_ENV=development
 PORT=5000
 FRONTEND_URL=http://localhost:3000
-
-# Database
 MONGODB_URI=mongodb+srv://...
-
-# Authentication
 JWT_SECRET=...
 JWT_EXPIRE=7d
 JWT_COOKIE_EXPIRE=7
-
-# Anthropic
 ANTHROPIC_API_KEY=...
 ANTHROPIC_API_VERSION=2023-06-01
 ANTHROPIC_MODEL=claude-...
@@ -849,106 +475,42 @@ ANTHROPIC_TIMEOUT_MS=30000
 ANTHROPIC_MAX_RETRIES=2
 ```
 
-Important notes:
+If `ANTHROPIC_MODEL` is set to a Claude Opus model, every Claude-backed node can use Opus through the shared Anthropic service.
+
+## Current Build Status
+
+Done:
 
 ```text
-Use one ANTHROPIC_MODEL for the first version.
-Use the same model across all agent nodes.
-Temperature configuration is not used.
-Newer Anthropic models do not support custom temperature values.
-Control behavior using prompts, structured output, and validation.
+Claude-backed intent router with rule fallback
+Goal extraction and confirmation
+Website-only business review intake
+Backend website crawling
+Claude website summary
+Website summary confirm/edit flow
+AgentEvidence collection for website evidence
+Gap scoring from profile, goal, and website context
+Deterministic lowest-gap project matching through ProjectCatalog.subjects
+AgentProjectRecommendation collection for recommendation history
+30-60-90 plan generation with Claude
+ProjectCatalog marketplace lookup for planner
+Marketplace project recommendations in plan with gap area, gap score, and matched subjects
+Direct project/service matching from ProjectCatalog
+First recommended project marked as Start here
+Business review step before final plan generation
+PPTX generation with gap scores, gap areas, matched subjects, recommendations, and final plan
+Modern styled PPT slides
+Memory summary for returning users
+Welcome-back message on reopened conversations
+Plan summary UI
+Recommended project links open in new tabs
+Deterministic fallback review and plan
 ```
 
-### Azure App Service Settings
-
-In Azure App Service, set environment variables as Application Settings.
-
-Do not commit secrets to GitHub.
-
-Minimum production settings:
+Pending:
 
 ```text
-NODE_ENV
-PORT
-FRONTEND_URL
-MONGODB_URI
-JWT_SECRET
-ANTHROPIC_API_KEY
-ANTHROPIC_API_VERSION
-ANTHROPIC_MODEL
-ANTHROPIC_MAX_TOKENS
-ANTHROPIC_TIMEOUT_MS
-ANTHROPIC_MAX_RETRIES
-```
-
-## First Build Scope
-
-Do not build all five phases at once.
-
-Build the system step by step.
-
-### Milestone 1
-
-```text
-Agent API endpoint
-LangGraph.js setup
-Shared state object
-memory_agent_node
-orchestrator_node
-MongoDB save/load
-Business and expert onboarding
-```
-
-### Milestone 2
-
-```text
-Goal definition
-nextAction routing
-Phase changes
-Goal save/load
-```
-
-### Milestone 3
-
-```text
-diagnostic_agent_node
-Gap scores
-Diagnostic save/load
-Simple markdown diagnosis
-```
-
-### Milestone 4
-
-```text
-planner_agent_node
-Project catalogue search
-30-60-90 day plan
-Plan save/load
-```
-
-### Milestone 5
-
-```text
-router_agent_node
-Expert matching
-activeGate
-Approval endpoint
-Frontend approval UI
-```
-
-## Final First Version Decision
-
-For the first version:
-
-```text
-Use LangGraph.js inside the Node.js backend.
-Use the existing Next.js page as the UI.
-Use MongoDB/Mongoose as the saved data layer.
-Use LangGraph state as the temporary working data object.
-Use one Anthropic model for all nodes that need the model.
-Treat agents as LangGraph nodes.
-Use MongoDB/Mongoose for saved user and profile data.
-Use the same model across all agent nodes.
-Temperature configuration is not used.
-Add human approval before expert/project commitment.
+expert matching
+human approval UI and endpoint
+project purchase/start action from agent plan
 ```

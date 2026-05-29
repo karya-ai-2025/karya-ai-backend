@@ -48,6 +48,10 @@ const conversationSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
       index: true
+    },
+    agentState: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
     }
   },
   {

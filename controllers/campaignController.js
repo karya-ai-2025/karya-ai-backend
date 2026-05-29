@@ -5,7 +5,7 @@ const UserPlan = require('../models/UserPlan');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const CreditCost = require('../models/CreditCost');
 const { processCampaign, refundUnusedCredits } = require('../services/campaignProcessor');
-const { validateEmailBatch, normalizeEmail } = require('../services/zeroBounceService');
+const { validateEmailBatch, normalizeEmail } = require('../services/neverBounceService');
 
 const isEmailLike = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 
@@ -158,7 +158,7 @@ const createCampaign = async (req, res) => {
   }
 };
 
-// @desc    Validate selected campaign lead emails with ZeroBounce
+// @desc    Validate selected campaign lead emails with NeverBounce
 // @route   POST /api/campaigns/validate-emails
 // @access  Private
 const validateCampaignEmails = async (req, res) => {
@@ -229,7 +229,11 @@ const validateCampaignEmails = async (req, res) => {
         details: {
           didYouMean: result.did_you_mean || '',
           freeEmail: result.free_email,
-          domain: result.domain || ''
+          domain: result.domain || '',
+          flags: result.flags || [],
+          suggestedCorrection: result.suggested_correction || result.did_you_mean || '',
+          executionTime: result.execution_time,
+          providerStatus: result.providerStatus || ''
         }
       };
     });
@@ -264,7 +268,7 @@ const validateCampaignEmails = async (req, res) => {
         leadId: `email_validation_${Date.now()}`,
         metadata: {
           type: 'EMAIL_VALIDATION',
-          provider: 'zerobounce',
+          provider: 'neverbounce',
           requestedEmails: uniqueEmails.length,
           creditCostPerEmail: validationCreditCost,
           verifiedEmails: verifiedCount,
