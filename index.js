@@ -28,13 +28,11 @@ const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
 const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
-<<<<<<< HEAD
 // const campaignRoutes = require('./routes/campaigns'); // Email campaigns — file not created yet
 // const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates — file not created yet
 // const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects — file not created yet
 // const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks — file not created yet
 // const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations — file not created yet
-=======
 
 const campaignRoutes = require('./routes/campaigns'); // Email campaigns
 const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
@@ -43,7 +41,6 @@ const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
 const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations
 const agentRoutes = require('./routes/agentRoutes'); // LangGraph agent workflow
 const paymentRoutes = require('./routes/paymentRoutes'); // Cashfree payment routes
->>>>>>> 481b2a92e81c366aaf0bcd1462dbc26f38b781d7
 const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deliverable negotiations
 const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
@@ -160,7 +157,6 @@ app.use('/api/resources',        resourceRoutes);        // Resource hub — mus
 app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter) — must be before /api planRoutes
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
-<<<<<<< HEAD
 // app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet
 // app.use('/api/email-templates', emailTemplateRoutes); // Email templates — file not created yet
 // app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists — file not created yet
@@ -169,7 +165,6 @@ app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
-=======
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
@@ -178,7 +173,6 @@ app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
 
->>>>>>> 481b2a92e81c366aaf0bcd1462dbc26f38b781d7
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);
