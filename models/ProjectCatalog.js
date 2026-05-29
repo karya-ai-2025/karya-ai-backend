@@ -142,6 +142,7 @@ projectCatalogSchema.virtual('pricingTiers', {
 });
 
 projectCatalogSchema.index({ category: 1, isActive: 1 });
+projectCatalogSchema.index({ subjects: 1 });
 projectCatalogSchema.index({ isTrending: 1 });
 projectCatalogSchema.index({ isFeatured: 1 });
 projectCatalogSchema.index({ 'stats.trendingCount': -1 });

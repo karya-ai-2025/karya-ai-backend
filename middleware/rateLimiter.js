@@ -1,8 +1,13 @@
 // middleware/rateLimiter.js
 // Rate limiting middleware to prevent abuse
 
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { config } = require('../config/config');
+
+const keyGenerator = (req) => {
+  const ip = req.ip || '127.0.0.1';
+  return ipKeyGenerator(ip);
+};
 
 /**
  * General API rate limiter
@@ -11,6 +16,7 @@ const { config } = require('../config/config');
 const apiLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs, // 15 minutes by default
   max: config.env === 'development' ? 5000 : config.rateLimit.max, // 5000 for dev, 1000 for prod
+  keyGenerator,
   message: {
     success: false,
     status: 'error',
@@ -31,6 +37,7 @@ const apiLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: config.env === 'development' ? 100 : 10, // 100 for dev, 10 for prod
+  keyGenerator,
   message: {
     success: false,
     status: 'error',
@@ -47,6 +54,7 @@ const authLimiter = rateLimit({
 const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 3, // 3 requests per hour
+  keyGenerator,
   message: {
     success: false,
     status: 'error',
@@ -62,6 +70,7 @@ const passwordResetLimiter = rateLimit({
 const emailLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5, // 5 emails per hour
+  keyGenerator,
   message: {
     success: false,
     status: 'error',
@@ -77,6 +86,7 @@ const emailLimiter = rateLimit({
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5, // 5 registration attempts per hour
+  keyGenerator,
   message: {
     success: false,
     status: 'error',

@@ -21,8 +21,8 @@ const userCreditConsumptionSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Action type is required'],
       enum: {
-        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS'],
-        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, or DOWNLOAD_LEADS'
+        values: ['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS', 'SEND_CAMPAIGN_EMAIL', 'VALIDATE_EMAIL'],
+        message: 'Action type must be VIEW_EMAIL, VIEW_PHONE, DOWNLOAD_LEADS, SEND_CAMPAIGN_EMAIL, or VALIDATE_EMAIL'
       }
     },
 
@@ -35,9 +35,9 @@ const userCreditConsumptionSchema = new mongoose.Schema(
 
     // Lead information (if applicable)
     leadId: {
-      type: String, // Using String since leads are in Prisma/PostgreSQL
+      type: String,
       required: function() {
-        return this.actionType === 'VIEW_EMAIL' || this.actionType === 'VIEW_PHONE';
+        return ['VIEW_EMAIL', 'VIEW_PHONE'].includes(this.actionType);
       }
     },
 
@@ -156,6 +156,10 @@ userCreditConsumptionSchema.methods.getActionDescription = function() {
       return `Viewed phone number for ${this.leadName || 'lead'}`;
     case 'DOWNLOAD_LEADS':
       return 'Downloaded leads data';
+    case 'SEND_CAMPAIGN_EMAIL':
+      return `Campaign email sending${this.metadata?.campaignName ? ` — ${this.metadata.campaignName}` : ''}`;
+    case 'VALIDATE_EMAIL':
+      return `Validated ${this.metadata?.verifiedEmails || this.creditsConsumed || 0} email${(this.metadata?.verifiedEmails || this.creditsConsumed || 0) === 1 ? '' : 's'}`;
     default:
       return 'Unknown action';
   }

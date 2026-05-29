@@ -18,6 +18,11 @@ const planPackageSchema = new mongoose.Schema(
       required: [true, 'Price is required'],
       min: [0, 'Price cannot be negative']
     },
+    currency: {
+      type: String,
+      trim: true,
+      uppercase: true
+    },
     // Credits system
     credits: {
       type: Number,

@@ -82,10 +82,22 @@ const userPlanSchema = new mongoose.Schema(
       },
       paymentMethod: {
         type: String,
-        enum: ['stripe', 'paypal', 'razorpay', 'manual'],
+        enum: ['stripe', 'paypal', 'razorpay', 'cashfree', 'manual'],
         default: 'stripe'
       },
       transactionId: {
+        type: String,
+        trim: true
+      },
+      cashfreeOrderId: {
+        type: String,
+        trim: true
+      },
+      cashfreeCfOrderId: {
+        type: String,
+        trim: true
+      },
+      cashfreePaymentStatus: {
         type: String,
         trim: true
       },

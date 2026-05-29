@@ -1,0 +1,93 @@
+const { Annotation } = require('@langchain/langgraph');
+
+const replaceValue = (left, right) => (right === undefined ? left : right);
+
+const AgentStateAnnotation = Annotation.Root({
+  userId: Annotation({ reducer: replaceValue, default: () => null }),
+  conversationId: Annotation({ reducer: replaceValue, default: () => null }),
+  isAuthenticated: Annotation({ reducer: replaceValue, default: () => false }),
+  phase: Annotation({ reducer: replaceValue, default: () => 'onboarding' }),
+  messages: Annotation({ reducer: replaceValue, default: () => [] }),
+  userType: Annotation({ reducer: replaceValue, default: () => null }),
+  identity: Annotation({ reducer: replaceValue, default: () => ({}) }),
+  businessProfile: Annotation({ reducer: replaceValue, default: () => ({}) }),
+  expertProfile: Annotation({ reducer: replaceValue, default: () => ({}) }),
+  goal: Annotation({ reducer: replaceValue, default: () => null }),
+  businessEvidence: Annotation({ reducer: replaceValue, default: () => ({ websites: [], intakeStatus: 'open', canRunBasic: true }) }),
+  gapScores: Annotation({ reducer: replaceValue, default: () => null }),
+  businessReview: Annotation({ reducer: replaceValue, default: () => null }),
+  plan: Annotation({ reducer: replaceValue, default: () => null }),
+  marketplaceProjectMatches: Annotation({ reducer: replaceValue, default: () => null }),
+  selectedProject: Annotation({ reducer: replaceValue, default: () => null }),
+  matchedExpert: Annotation({ reducer: replaceValue, default: () => null }),
+  activeGate: Annotation({ reducer: replaceValue, default: () => null }),
+  interruptIntent: Annotation({ reducer: replaceValue, default: () => null }),
+  resetReason: Annotation({ reducer: replaceValue, default: () => null }),
+  nextAction: Annotation({ reducer: replaceValue, default: () => 'ask_field' }),
+  missingField: Annotation({ reducer: replaceValue, default: () => null }),
+  uiRequest: Annotation({ reducer: replaceValue, default: () => null }),
+  response: Annotation({ reducer: replaceValue, default: () => '' }),
+  memorySummary: Annotation({ reducer: replaceValue, default: () => null }),
+  profileProgress: Annotation({ reducer: replaceValue, default: () => ({}) })
+});
+
+const createInitialAgentState = (overrides = {}) => ({
+  userId: null,
+  conversationId: null,
+  isAuthenticated: false,
+  phase: 'onboarding',
+  messages: [],
+  userType: null,
+  identity: {},
+  businessProfile: {},
+  expertProfile: {},
+  goal: null,
+  businessEvidence: { websites: [], intakeStatus: 'open', canRunBasic: true },
+  gapScores: null,
+  businessReview: null,
+  plan: null,
+  marketplaceProjectMatches: null,
+  selectedProject: null,
+  matchedExpert: null,
+  activeGate: null,
+  interruptIntent: null,
+  resetReason: null,
+  nextAction: 'ask_field',
+  missingField: null,
+  uiRequest: null,
+  response: '',
+  memorySummary: null,
+  profileProgress: {},
+  ...overrides
+});
+
+const toPublicAgentState = (state) => ({
+  conversationId: state.conversationId || null,
+  userType: state.userType || null,
+  phase: state.phase,
+  nextAction: state.nextAction,
+  missingField: state.missingField || null,
+  identity: state.identity || {},
+  businessProfile: state.businessProfile || {},
+  expertProfile: state.expertProfile || {},
+  goal: state.goal || null,
+  businessEvidence: state.businessEvidence || { websites: [], intakeStatus: 'open', canRunBasic: true },
+  gapScores: state.gapScores || null,
+  businessReview: state.businessReview || null,
+  plan: state.plan || null,
+  marketplaceProjectMatches: state.marketplaceProjectMatches || null,
+  selectedProject: state.selectedProject || null,
+  matchedExpert: state.matchedExpert || null,
+  activeGate: state.activeGate || null,
+  interruptIntent: state.interruptIntent || null,
+  resetReason: state.resetReason || null,
+  uiRequest: state.uiRequest || null,
+  memorySummary: state.memorySummary || null,
+  profileProgress: state.profileProgress || {}
+});
+
+module.exports = {
+  AgentStateAnnotation,
+  createInitialAgentState,
+  toPublicAgentState
+};

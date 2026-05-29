@@ -32,10 +32,18 @@ const businessProfileSchema = new mongoose.Schema(
       website: {
         type: String,
         trim: true,
-        match: [
-          /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/,
-          'Please provide a valid URL'
-        ]
+        validate: {
+          validator(value) {
+            if (!value) return true;
+            try {
+              const parsed = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+              return ['http:', 'https:'].includes(parsed.protocol) && Boolean(parsed.hostname.includes('.'));
+            } catch {
+              return false;
+            }
+          },
+          message: 'Please provide a valid URL'
+        }
       },
       description: {
         type: String,

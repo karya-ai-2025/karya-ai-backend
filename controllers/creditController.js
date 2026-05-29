@@ -39,7 +39,9 @@ const getCreditStats = asyncHandler(async (req, res, next) => {
   const creditBreakdown = {
     VIEW_EMAIL: { totalCredits: 0, count: 0 },
     VIEW_PHONE: { totalCredits: 0, count: 0 },
-    DOWNLOAD_LEADS: { totalCredits: 0, count: 0 }
+    DOWNLOAD_LEADS: { totalCredits: 0, count: 0 },
+    SEND_CAMPAIGN_EMAIL: { totalCredits: 0, count: 0 },
+    VALIDATE_EMAIL: { totalCredits: 0, count: 0 }
   };
 
   // Populate breakdown from stats
