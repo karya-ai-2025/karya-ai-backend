@@ -38,6 +38,7 @@ const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding c
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
 const adminRoutes       = require('./routes/adminRoutes');        // Admin analytics & management
 const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
+const contentProjectRoutes = require('./routes/contentProjectRoutes'); // Content Project (LinkedIn + Newsletter)
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
@@ -129,7 +130,8 @@ app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
-app.use('/api/resources',   resourceRoutes);    // Resource hub — must be before /api planRoutes (which has global protect)
+app.use('/api/resources',        resourceRoutes);        // Resource hub — must be before /api planRoutes
+app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter) — must be before /api planRoutes
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 // app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet

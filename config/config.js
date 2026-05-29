@@ -23,6 +23,8 @@ const config = {
 
   frontendUrl: process.env.FRONTEND_URL,
 
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100

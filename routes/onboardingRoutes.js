@@ -12,7 +12,9 @@ const {
   updateQuickWins,
   getOnboardingStatus,
   skipStep,
-  saveAllOnboardingData
+  saveAllOnboardingData,
+  generateICPName,
+  generateMarketingGoals,
 } = require('../controllers/onboardingController');
 
 const { protect } = require('../middleware/authMiddleware');
@@ -38,5 +40,9 @@ router.post('/business/skip/:step', skipStep);
 
 // Batch save all data
 router.put('/business/save-all', saveAllOnboardingData);
+
+// AI generation helpers
+router.post('/business/generate-icp-name', generateICPName);
+router.post('/business/generate-marketing-goals', generateMarketingGoals);
 
 module.exports = router;

@@ -4,6 +4,11 @@
 const User = require('../models/User');
 const BusinessProfile = require('../models/BusinessProfile');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
+const Anthropic = require('@anthropic-ai/sdk');
+
+function getAnthropic() {
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+}
 
 // ============================================
 // STEP 1: PROFILE SETUP (Avatar Upload)
@@ -522,6 +527,105 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
   });
 });
 
+// ============================================
+// AI HELPER: GENERATE ICP NAME FROM STORY
+// ============================================
+
+/**
+ * @desc    AI reads user's customer description and returns an ICP name + clean description
+ * @route   POST /api/onboarding/business/generate-icp-name
+ * @access  Private
+ */
+const generateICPName = asyncHandler(async (req, res, next) => {
+  const { description } = req.body;
+  if (!description || !description.trim()) {
+    return next(new AppError('Customer description is required', 400));
+  }
+
+  const prompt = `A business owner has described their ideal customer as follows:
+
+"${description.trim()}"
+
+Based on this description:
+1. Create a concise, memorable ICP persona name (e.g., "Sarah the Startup Founder" or "Mid-Market Marketing Manager"). The name should capture the essence of who this customer is.
+2. Write a clean, professional 2-3 sentence description that summarises key characteristics, goals and pain points.
+
+Return ONLY valid JSON in this exact format (no markdown, no extra text):
+{"name":"...","description":"..."}`;
+
+  const message = await getAnthropic().messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 512,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = message.content[0]?.text?.trim() || '';
+  let parsed;
+  try {
+    // Strip any markdown code fences if present
+    const cleaned = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return next(new AppError('AI returned an unexpected format. Please try again.', 500));
+  }
+
+  if (!parsed.name || !parsed.description) {
+    return next(new AppError('AI response was incomplete. Please try again.', 500));
+  }
+
+  res.json({ success: true, data: { name: parsed.name, description: parsed.description } });
+});
+
+// ============================================
+// AI HELPER: GENERATE MARKETING GOALS
+// ============================================
+
+/**
+ * @desc    AI reads current + desired marketing and returns structured goals & objectives
+ * @route   POST /api/onboarding/business/generate-marketing-goals
+ * @access  Private
+ */
+const generateMarketingGoals = asyncHandler(async (req, res, next) => {
+  const { currentActivities, desiredPlan } = req.body;
+  if (!currentActivities?.trim() && !desiredPlan?.trim()) {
+    return next(new AppError('Please provide at least one of: current activities or desired plan', 400));
+  }
+
+  const parts = [];
+  if (currentActivities?.trim()) parts.push(`Current marketing activities:\n"${currentActivities.trim()}"`);
+  if (desiredPlan?.trim()) parts.push(`Desired marketing plan:\n"${desiredPlan.trim()}"`);
+
+  const prompt = `A business owner has shared the following about their marketing:
+
+${parts.join('\n\n')}
+
+Based on this, generate 4–6 clear, specific, and measurable marketing goals and objectives. Each goal should be actionable and relevant to a growing business. Write them as a numbered list.
+
+Return ONLY valid JSON in this exact format (no markdown, no extra text):
+{"goalsObjectives":"1. ...\\n2. ...\\n3. ..."}`;
+
+  const message = await getAnthropic().messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 600,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = message.content[0]?.text?.trim() || '';
+  let parsed;
+  try {
+    const cleaned = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return next(new AppError('AI returned an unexpected format. Please try again.', 500));
+  }
+
+  if (!parsed.goalsObjectives) {
+    return next(new AppError('AI response was incomplete. Please try again.', 500));
+  }
+
+  res.json({ success: true, data: { goalsObjectives: parsed.goalsObjectives } });
+});
+
 module.exports = {
   updateProfilePhoto,
   updatePlatformUsage,
@@ -533,5 +637,7 @@ module.exports = {
   updateQuickWins,
   getOnboardingStatus,
   skipStep,
-  saveAllOnboardingData
+  saveAllOnboardingData,
+  generateICPName,
+  generateMarketingGoals,
 };

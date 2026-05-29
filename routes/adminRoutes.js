@@ -56,6 +56,94 @@ router.get('/analytics/users', asyncHandler(async (req, res) => {
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/analytics/azure — Azure Application Insights metrics
+// Requires env vars: AZURE_APP_INSIGHTS_APP_ID, AZURE_APP_INSIGHTS_API_KEY
+// Get these from: Azure Portal → Application Insights → Configure → API Access
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/analytics/azure', asyncHandler(async (req, res) => {
+  const appId  = process.env.AZURE_APP_INSIGHTS_APP_ID;
+  const apiKey = process.env.AZURE_APP_INSIGHTS_API_KEY;
+
+  if (!appId || !apiKey) {
+    return res.json({ success: true, data: { configured: false } });
+  }
+
+  const AI_BASE = `https://api.applicationinsights.io/v1/apps/${appId}`;
+  const headers = { 'x-api-key': apiKey, 'Content-Type': 'application/json' };
+
+  // Execute a Kusto query against Application Insights
+  async function kusto(query) {
+    const r = await fetch(`${AI_BASE}/query`, {
+      method:  'POST',
+      headers,
+      body: JSON.stringify({ query, timespan: 'P7D' }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      throw new Error(`App Insights API ${r.status}: ${err}`);
+    }
+    return r.json();
+  }
+
+  // Convert a raw App Insights table into an array of plain objects
+  function tableToRows(result) {
+    const table = result?.tables?.[0];
+    if (!table) return [];
+    return table.rows.map(row =>
+      Object.fromEntries(table.columns.map((col, i) => [col.name, row[i]]))
+    );
+  }
+
+  const [reqResult, errResult, rtResult, pvResult, exResult, liveResult] =
+    await Promise.allSettled([
+      // Daily request count
+      kusto(`requests
+        | summarize count() by bin(timestamp, 1d)
+        | order by timestamp asc`),
+      // Daily error rate
+      kusto(`requests
+        | summarize total=count(), failed=countif(success==false) by bin(timestamp, 1d)
+        | extend errorRate=round(todouble(failed)/todouble(total)*100, 1)
+        | order by timestamp asc`),
+      // Daily avg response time (ms)
+      kusto(`requests
+        | summarize avgMs=round(avg(duration), 1) by bin(timestamp, 1d)
+        | order by timestamp asc`),
+      // Daily page views
+      kusto(`pageViews
+        | summarize count() by bin(timestamp, 1d)
+        | order by timestamp asc`),
+      // Daily exceptions
+      kusto(`exceptions
+        | summarize count() by bin(timestamp, 1d)
+        | order by timestamp asc`),
+      // 7-day totals in one query
+      kusto(`union requests, pageViews, exceptions
+        | summarize
+            totalRequests = countif(itemType == "request"),
+            totalPageViews = countif(itemType == "pageView"),
+            totalExceptions = countif(itemType == "exception"),
+            failedRequests  = countif(itemType == "request" and success == false),
+            avgResponseMs   = round(avg(iif(itemType == "request", duration, real(null))), 1)`),
+    ]);
+
+  const totalsRow = tableToRows(liveResult.status === 'fulfilled' ? liveResult.value : {});
+
+  res.json({
+    success: true,
+    data: {
+      configured:   true,
+      totals:       totalsRow[0] || {},
+      requests:     tableToRows(reqResult.status    === 'fulfilled' ? reqResult.value    : {}),
+      errors:       tableToRows(errResult.status    === 'fulfilled' ? errResult.value    : {}),
+      responseTime: tableToRows(rtResult.status     === 'fulfilled' ? rtResult.value     : {}),
+      pageViews:    tableToRows(pvResult.status     === 'fulfilled' ? pvResult.value     : {}),
+      exceptions:   tableToRows(exResult.status     === 'fulfilled' ? exResult.value     : {}),
+    },
+  });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/admin/catalog
 // Create a new catalog project + optional pricing tiers in one call.
 // Body: { ...ProjectCatalog fields, pricingTiers: [ ...ProjectPricing fields ] }
