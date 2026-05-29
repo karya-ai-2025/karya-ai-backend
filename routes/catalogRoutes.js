@@ -3,7 +3,30 @@ const { query, param, body, validationResult } = require('express-validator');
 const ProjectCatalog = require('../models/ProjectCatalog');
 const ProjectPricing = require('../models/ProjectPricing');
 const ProjectUser = require('../models/ProjectUser');
+const ExpertProfile = require('../models/ExpertProfile');
+const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
+
+const CATEGORY_MAP = {
+  'Digital Marketing':      'outbound',
+  'SEO':                    'traffic',
+  'Content Marketing':      'brand',
+  'Social Media Marketing': 'outreach',
+  'Email Marketing':        'email',
+  'PPC & Paid Ads':         'traffic',
+  'Branding':               'brand',
+  'Marketing Strategy':     'outbound',
+  'Growth Hacking':         'outbound',
+  'PR & Communications':    'brand',
+  'Influencer Marketing':   'outreach',
+  'Video Marketing':        'brand',
+  'Analytics & Data':       'intelligence',
+  'UX/UI Design':           'assistant',
+  'Web Development':        'assistant',
+  'Copywriting':            'email',
+  'Graphic Design':         'brand',
+  'E-commerce Marketing':   'traffic',
+};
 
 const router = express.Router();
 
@@ -195,7 +218,7 @@ router.post('/:slug/purchase', [
           lastAccessedAt: new Date(),
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     res.json({
@@ -241,6 +264,145 @@ router.delete('/:slug/purchase', [
     res.json({ success: true, message: 'Project removed from your account' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to remove project', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/catalog/:slug/experts
+// Returns all verified + public experts attached to a project
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:slug/experts', [
+  param('slug').isString().trim(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const project = await ProjectCatalog.findOne({
+      slug: req.params.slug,
+      isActive: true,
+      isPublished: true,
+    })
+      .select('_id slug associatedExperts')
+      .populate({
+        path: 'associatedExperts.expertId',
+        select: 'headline ratings profileStatus location pricing availability user _id',
+        populate: { path: 'user', select: 'fullName avatar' },
+      });
+
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const experts = (project.associatedExperts || [])
+      .filter(ae => ae.expertId && ae.expertId.profileStatus?.isPublic)
+      .map(ae => ({
+        expertProfileId: ae.expertId._id,
+        name:            ae.expertId.user?.fullName || 'Expert',
+        avatar:          ae.expertId.user?.avatar   || null,
+        headline:        ae.expertId.headline        || '',
+        rating:          ae.expertId.ratings?.overall      || 0,
+        totalReviews:    ae.expertId.ratings?.totalReviews || 0,
+        city:            ae.expertId.location?.city        || '',
+        hourlyRateMin:   ae.expertId.pricing?.hourlyRate?.min || null,
+        availability:    ae.expertId.availability?.status  || 'available',
+        contribution:    ae.contribution || '',
+        isVerified:      ae.isVerified,
+      }));
+
+    res.json({ success: true, data: { experts } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch experts', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/catalog/:slug/experts  (PROTECTED)
+// Attaches the authenticated user's expert profile to a catalog project.
+// Derives the best-matching project from the expert's primaryCategory if needed.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/:slug/experts', [
+  protect,
+  param('slug').isString().trim(),
+  body('contribution').optional().isString().trim().isLength({ max: 200 }),
+  body('portfolioItemId').optional().isString(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('profiles.expert hasExpertProfile');
+    if (!user?.hasExpertProfile || !user.profiles?.expert) {
+      return res.status(403).json({ success: false, message: 'Expert profile required' });
+    }
+
+    const expertProfile = await ExpertProfile.findById(user.profiles.expert).select('_id primaryCategory');
+    if (!expertProfile) {
+      return res.status(404).json({ success: false, message: 'Expert profile not found' });
+    }
+
+    const project = await ProjectCatalog.findOne({ slug: req.params.slug, isActive: true });
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const alreadyLinked = project.associatedExperts?.some(
+      ae => ae.expertId?.toString() === expertProfile._id.toString()
+    );
+    if (alreadyLinked) {
+      return res.json({ success: true, message: 'Already linked to this project' });
+    }
+
+    project.associatedExperts.push({
+      expertId:        expertProfile._id,
+      portfolioItemId: req.body.portfolioItemId || null,
+      contribution:    req.body.contribution || expertProfile.primaryCategory || '',
+      isVerified:      false,
+      addedAt:         new Date(),
+    });
+
+    await project.save();
+    res.json({ success: true, message: 'Expert linked to project', data: { slug: project.slug } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to link expert', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/catalog/:slug/experts/:expertProfileId  (PROTECTED)
+// Removes an expert from a project's associatedExperts list.
+// Only the expert themselves can unlink.
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/:slug/experts/:expertProfileId', [
+  protect,
+  param('slug').isString().trim(),
+  param('expertProfileId').isString().trim(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('profiles.expert hasExpertProfile');
+    if (!user?.hasExpertProfile || !user.profiles?.expert) {
+      return res.status(403).json({ success: false, message: 'Expert profile required' });
+    }
+
+    if (user.profiles.expert.toString() !== req.params.expertProfileId) {
+      return res.status(403).json({ success: false, message: 'You can only unlink your own profile' });
+    }
+
+    const project = await ProjectCatalog.findOne({ slug: req.params.slug });
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const before = project.associatedExperts.length;
+    project.associatedExperts = project.associatedExperts.filter(
+      ae => ae.expertId?.toString() !== req.params.expertProfileId
+    );
+
+    if (project.associatedExperts.length === before) {
+      return res.status(404).json({ success: false, message: 'Expert not linked to this project' });
+    }
+
+    await project.save();
+    res.json({ success: true, message: 'Expert removed from project' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to remove expert', error: err.message });
   }
 });
 

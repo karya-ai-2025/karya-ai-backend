@@ -204,6 +204,7 @@ const expertProfileSchema = new mongoose.Schema(
       description: { type: String, trim: true, maxlength: 1000 },
       results: { type: String, trim: true, maxlength: 500 },
       category: { type: String, trim: true },
+      linkedProjectSlug: { type: String, trim: true },
       images: [{ type: String }],
       link: { type: String, trim: true },
       attachments: [{

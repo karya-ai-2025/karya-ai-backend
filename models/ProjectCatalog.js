@@ -80,6 +80,15 @@ const projectCatalogSchema = new Schema({
     borderColor: { type: String },   // "border-blue-200"
   },
 
+  // Experts who have done this type of work
+  associatedExperts: [{
+    expertId:        { type: mongoose.Schema.Types.ObjectId, ref: 'ExpertProfile' },
+    portfolioItemId: { type: mongoose.Schema.Types.ObjectId },
+    contribution:    { type: String, trim: true },
+    isVerified:      { type: Boolean, default: false },
+    addedAt:         { type: Date, default: Date.now },
+  }],
+
   // Expert cities where talent is available
   expertCities: [{ type: String }],
 

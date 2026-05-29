@@ -28,6 +28,7 @@ const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
 const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
+
 const campaignRoutes = require('./routes/campaigns'); // Email campaigns
 const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
 const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects
@@ -35,6 +36,13 @@ const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
 const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations
 const agentRoutes = require('./routes/agentRoutes'); // LangGraph agent workflow
 const paymentRoutes = require('./routes/paymentRoutes'); // Cashfree payment routes
+const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deliverable negotiations
+const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
+const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
+
+// Jobs
+const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
+
 
 // Validate environment variables
 validateConfig();
@@ -124,6 +132,7 @@ app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
 app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
+
 app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth) — must be before planRoutes
 app.use('/api/payments', paymentRoutes); // Payment gateway order creation and verification
 app.use('/api', planRoutes); // Plan and pricing management
@@ -133,6 +142,18 @@ app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
+
+app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
+app.use('/api', planRoutes); // Plan and pricing management
+app.use('/api/credits', creditRoutes); // Credit consumption tracking
+app.use('/api/campaigns', campaignRoutes); // Email campaigns
+app.use('/api/email-templates', emailTemplateRoutes); // Email templates
+app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
+app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
+app.use('/api/conversations', conversationRoutes); // Agent conversation history
+app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
+app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
+
 
 // Future routes (placeholders)
 // app.use('/api/messages', messageRoutes);
@@ -161,6 +182,9 @@ const startServer = async () => {
     // Test PostgreSQL connection using global singleton client
     await testConnection();
     
+    // Start background jobs
+    startTranscriptJob();
+
     // Start Express server
     const server = app.listen(PORT, () => {
       console.log(`
@@ -214,6 +238,7 @@ const startServer = async () => {
     // Graceful shutdown
     process.on('SIGTERM', () => {
       console.log('👋 SIGTERM received. Shutting down gracefully...');
+      stopTranscriptJob();
       server.close(() => {
         console.log('💤 Process terminated');
       });
