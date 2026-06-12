@@ -47,6 +47,7 @@ const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcr
 const adminRoutes       = require('./routes/adminRoutes');        // Admin analytics & management
 const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
 const contentProjectRoutes = require('./routes/contentProjectRoutes'); // Content Project (LinkedIn + Newsletter)
+const hitlRoutes = require('./routes/hitlRoutes'); // Human-in-the-loop approval requests
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
@@ -151,6 +152,7 @@ app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
+app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
 
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
 app.use('/api/resources',        resourceRoutes);        // Resource hub — must be before /api planRoutes
