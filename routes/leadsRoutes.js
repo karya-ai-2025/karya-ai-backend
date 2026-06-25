@@ -7,8 +7,10 @@ const { prisma } = require('../utils/prismaClient'); // Global singleton client
 const CreditCost = require('../models/CreditCost');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const UserPlan = require('../models/UserPlan');
+const UserCRM = require('../models/UserCRM'); // used to derive the delivered-leads exclusion set
 const { getUserLeads, getUserLeadsCount } = require('../controllers/userLeadsController');
-const { protect } = require('../middleware/authMiddleware');
+const { upload, importLeads } = require('../controllers/leadsImportController');
+const { protect, restrictTo } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -44,6 +46,21 @@ router.get('/user-leads', protect, getUserLeads);
  * @access Private
  */
 router.get('/user-leads/count', protect, getUserLeadsCount);
+
+/**
+ * POST /api/leads/import-healthcare
+ * Import leads from an uploaded Excel file into tbl_healthcare.
+ * The file may contain leads from any industry — "GTM Industry" per row
+ * determines the industry; no single category is stamped on all rows.
+ * @access Admin only
+ */
+router.post(
+  '/import-healthcare',
+  protect,
+  restrictTo('admin'),
+  upload.single('file'),
+  importLeads
+);
 
 /**
  * GET /api/credits/cost/:actionType
@@ -699,12 +716,20 @@ router.post('/generate-for-download', [
       };
     }
 
-    // Location filter
+    // Location filter — expands region names via tbl_regions, falls back to direct ILIKE
     if (location && location.trim()) {
-      whereClause.Mailing_Country = {
-        contains: location.trim(),
-        mode: 'insensitive'
-      };
+      const regionRows = await prisma.$queryRawUnsafe(
+        `SELECT countries FROM tbl_regions WHERE region_name = LOWER($1)`,
+        location.trim()
+      );
+      const regionCountries = regionRows[0]?.countries || null;
+
+      if (regionCountries && regionCountries.length > 0) {
+        // Prisma `in` + `insensitive` handles "Us"/"US"/"us" quirks
+        whereClause.Mailing_Country = { in: regionCountries, mode: 'insensitive' };
+      } else {
+        whereClause.Mailing_Country = { contains: location.trim(), mode: 'insensitive' };
+      }
     }
 
     // Select fields based on download format
@@ -891,11 +916,12 @@ router.get('/company-segment', [
     const { companyName } = req.query;
     console.log(`Fetching segment for company: "${companyName}"`);
 
-    // Get the segment for the specific company
+    // Get the segment for the specific company (ILIKE so variant spellings still match)
     const company = await prisma.tbl_healthcare.findFirst({
       where: {
         Account_Name: {
-          equals: companyName.trim()
+          contains: companyName.trim(),
+          mode: 'insensitive',
         }
       },
       select: {
@@ -930,6 +956,54 @@ router.get('/company-segment', [
       message: 'Failed to fetch company segment',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+/**
+ * GET /api/leads/filters/regions
+ * Returns all region names from tbl_regions (e.g. "apac", "emea", "middle east")
+ */
+router.get('/filters/regions', async (req, res) => {
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT region_name, display_name FROM tbl_regions ORDER BY display_name`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Regions filter error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch regions' });
+  }
+});
+
+/**
+ * GET /api/leads/filters/segments
+ * Returns all segment names from tbl_segments (e.g. "smb", "enterprise")
+ */
+router.get('/filters/segments', async (req, res) => {
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT segment_name, display_name, min_employees, max_employees FROM tbl_segments ORDER BY min_employees NULLS LAST`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Segments filter error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch segments' });
+  }
+});
+
+/**
+ * GET /api/leads/filters/seniority
+ * Returns all seniority levels from tbl_seniority (e.g. "decision maker", "c-suite")
+ */
+router.get('/filters/seniority', async (req, res) => {
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT level_name, display_name FROM tbl_seniority ORDER BY id`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Seniority filter error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch seniority levels' });
   }
 });
 
@@ -1056,142 +1130,158 @@ router.get('/segments', [
 
 /**
  * POST /api/leads/generate
- * Generate leads based on search criteria
+ * Generate leads with keyset pagination and delivered-lead exclusion.
+ * Accepts region/segment/seniority filters that are expanded via the three
+ * PostgreSQL mapping tables (tbl_regions, tbl_segments, tbl_seniority).
+ * @access Private
  */
-router.post('/generate', [
+router.post('/generate', protect, [
   body('industry').notEmpty().withMessage('Industry is required'),
-  body('company').optional().isString().withMessage('Company must be a string'),
-  body('companySegment').optional().isString().withMessage('Company segment must be a string'),
-  body('location').optional().isString().withMessage('Location must be a string'),
+  body('company').optional().isString(),
+  body('companySegment').optional().isString(),
+  body('location').optional().isString(),
+  body('segment').optional().isString(),
+  body('seniority').optional().isString(),
+  body('cursor').optional().isInt({ min: 0 }).withMessage('cursor must be a non-negative integer'),
+  body('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { industry, company, companySegment, location } = req.body;
-    console.log('Generating leads with criteria:', { industry, company, companySegment, location });
+    const userId = req.user.id || req.user._id;
+    const { industry, company, companySegment, location, segment, seniority } = req.body;
+    const cursor = parseInt(req.body.cursor ?? 0, 10);
+    const limit  = Math.min(parseInt(req.body.limit ?? 100, 10), 100);
 
-    // Build search filters
-    const whereClause = {};
+    console.log('Generating leads:', { industry, company, companySegment, location, segment, seniority, cursor, limit, userId });
 
-    // Industry filter - convert slug back to industry name
-    if (industry) {
-      const industryRecord = await prisma.tbl_gtm_industry.findFirst({
-        where: {
-          industry_name: {
-            contains: industry.replace('-', ' '),
-            mode: 'insensitive'
-          }
-        }
-      });
-
-      const industrySearchTerm = industryRecord ? industryRecord.industry_name : industry;
-      whereClause.GTM_Industry = {
-        contains: industrySearchTerm,
-        mode: 'insensitive'
-      };
-    }
-
-    // Company filter
-    if (company && company.trim()) {
-      whereClause.Account_Name = {
-        contains: company.trim(),
-        mode: 'insensitive'
-      };
-    }
-
-    // Company segment filter
-    if (companySegment && companySegment.trim()) {
-      whereClause.Account_Sub_Segment = {
-        equals: companySegment.trim()
-      };
-    }
-
-    // Location filter - search in Mailing_Country only
-    if (location && location.trim()) {
-      whereClause.Mailing_Country = {
-        contains: location.trim(),
-        mode: 'insensitive'
-      };
-    }
-
-    // Build base criteria for total count (without company-specific filters)
-    const baseCriteria = {};
-    if (industry) {
-      const industryRecord = await prisma.tbl_gtm_industry.findFirst({
-        where: {
-          industry_name: {
-            contains: industry.replace('-', ' '),
-            mode: 'insensitive'
-          }
-        }
-      });
-      const industrySearchTerm = industryRecord ? industryRecord.industry_name : industry;
-      baseCriteria.GTM_Industry = {
-        contains: industrySearchTerm,
-        mode: 'insensitive'
-      };
-    }
-    if (companySegment && companySegment.trim()) {
-      baseCriteria.Account_Sub_Segment = {
-        equals: companySegment.trim()
-      };
-    }
-    if (location && location.trim()) {
-      baseCriteria.Mailing_Country = {
-        contains: location.trim(),
-        mode: 'insensitive'
-      };
-    }
-
-    // Execute search with pagination and get both matched and available counts
-    const [leads, totalMatched, totalAvailable] = await Promise.all([
-      prisma.tbl_healthcare.findMany({
-        where: whereClause,
-        select: {
-          id: true,
-          First_Name: true,
-          Last_Name: true,
-          title: true,
-          Account_Name: true,
-          email: true,
-          phone: true,
-          mobile: true,
-          GTM_Industry: true,
-          GTM_Sector: true,
-          Account_Sub_Segment: true,
-          Mailing_Country: true,
-          employees: true
-        },
-        take: 50, // Limit results for better performance
-        orderBy: [
-          { Account_Name: 'asc' },
-          { Last_Name: 'asc' }
-        ]
+    // ── Step 1: Resolve industry + all three mapping tables + delivered IDs in parallel ──
+    const [industryRecord, regionRow, segmentRow, seniorityRow, crmDocs] = await Promise.all([
+      prisma.tbl_gtm_industry.findFirst({
+        where: { industry_name: { contains: industry.replace('-', ' '), mode: 'insensitive' } }
       }),
-      prisma.tbl_healthcare.count({
-        where: whereClause
-      }),
-      prisma.tbl_healthcare.count({
-        where: baseCriteria
-      })
+      location && location.trim()
+        ? prisma.$queryRawUnsafe(
+            `SELECT countries FROM tbl_regions WHERE region_name = LOWER($1)`,
+            location.trim()
+          )
+        : Promise.resolve([]),
+      segment && segment.trim()
+        ? prisma.$queryRawUnsafe(
+            `SELECT min_employees, max_employees FROM tbl_segments WHERE segment_name = LOWER($1)`,
+            segment.trim()
+          )
+        : Promise.resolve([]),
+      seniority && seniority.trim()
+        ? prisma.$queryRawUnsafe(
+            `SELECT title_keywords FROM tbl_seniority WHERE level_name = LOWER($1)`,
+            seniority.trim()
+          )
+        : Promise.resolve([]),
+      UserCRM.find({ userId }, { leadIds: 1, _id: 0 }).lean(),
     ]);
 
-    console.log(`Found ${leads.length} leads (${totalMatched} matched out of ${totalAvailable} available for criteria)`);
+    const industryName    = industryRecord ? industryRecord.industry_name : industry;
+    const regionCountries = regionRow[0]?.countries        || null;
+    const empRange        = segmentRow[0]                  || null;
+    const titleKeywords   = seniorityRow[0]?.title_keywords || null;
 
-    res.json({
-      success: true,
-      data: leads,
-      pagination: {
-        totalMatched: totalMatched,
-        totalAvailable: totalAvailable,
-        returned: leads.length,
-        hasMore: totalMatched > 50
-      },
-      criteria: {
-        industry,
-        company,
-        companySegment,
-        location
+    const deliveredIds = [
+      ...new Set(
+        crmDocs
+          .flatMap(doc => doc.leadIds || [])
+          .map(id => parseInt(id, 10))
+          .filter(n => Number.isInteger(n) && n > 0)
+      )
+    ];
+
+    // ── Step 2: Build parameterized WHERE clause ──────────────────────────────────
+    // ALL column names are hardcoded constants — never from user input.
+    const filterValues  = [];
+    const filterClauses = [];
+
+    filterClauses.push(`"GTM Industry" ILIKE '%' || $${filterValues.length + 1} || '%'`);
+    filterValues.push(industryName);
+
+    if (company && company.trim()) {
+      filterClauses.push(`"Account Name" ILIKE '%' || $${filterValues.length + 1} || '%'`);
+      filterValues.push(company.trim());
+    }
+
+    if (companySegment && companySegment.trim()) {
+      filterClauses.push(`"Account Sub Segment" = $${filterValues.length + 1}`);
+      filterValues.push(companySegment.trim());
+    }
+
+    if (location && location.trim()) {
+      if (regionCountries && regionCountries.length > 0) {
+        // Region expansion: "apac" → ISO-2 array; LOWER() handles "Us"/"US"/"us" quirks
+        filterClauses.push(`LOWER("Mailing Country") = ANY($${filterValues.length + 1}::text[])`);
+        filterValues.push(regionCountries); // already lowercase from tbl_regions seed
+      } else {
+        filterClauses.push(`"Mailing Country" ILIKE '%' || $${filterValues.length + 1} || '%'`);
+        filterValues.push(location.trim());
       }
+    }
+
+    if (empRange) {
+      if (empRange.min_employees !== null && empRange.max_employees !== null) {
+        filterClauses.push(`employees BETWEEN $${filterValues.length + 1} AND $${filterValues.length + 2}`);
+        filterValues.push(empRange.min_employees, empRange.max_employees);
+      } else if (empRange.min_employees !== null) {
+        filterClauses.push(`employees >= $${filterValues.length + 1}`);
+        filterValues.push(empRange.min_employees);
+      }
+    }
+
+    if (titleKeywords && titleKeywords.length > 0) {
+      const patterns = titleKeywords.map(kw => `%${kw}%`);
+      filterClauses.push(`title ILIKE ANY($${filterValues.length + 1}::text[])`);
+      filterValues.push(patterns);
+    }
+
+    const filterWhere = filterClauses.join(' AND ');
+
+    // ── Step 3: COUNT (no cursor, no exclusion) ───────────────────────────────────
+    const countResult  = await prisma.$queryRawUnsafe(
+      `SELECT COUNT(*) AS count FROM tbl_healthcare WHERE ${filterWhere}`,
+      ...filterValues
+    );
+    const totalMatched = Number(countResult[0].count);
+
+    // ── Step 4: Main SELECT — keyset pagination + delivered-lead exclusion ────────
+    const selectValues = [...filterValues];
+    const cursorIdx    = selectValues.length + 1;  selectValues.push(cursor);
+    const excludeIdx   = selectValues.length + 1;  selectValues.push(deliveredIds);
+    const limitIdx     = selectValues.length + 1;  selectValues.push(limit);
+
+    const leads = await prisma.$queryRawUnsafe(`
+      SELECT
+        id, salutation,
+        "First Name", "Last Name", title,
+        "Account Name",
+        "Mailing Street", "Mailing City", "Mailing State/Province",
+        "Mailing Zip/Postal Code", "Mailing Country",
+        phone, fax, mobile, email,
+        "GTM Industry", "GTM Sector", "GTM Sub-Industry",
+        employees, "T Shirt Size", "Account Segment", "Account Sub Segment"
+      FROM tbl_healthcare
+      WHERE ${filterWhere}
+        AND id > $${cursorIdx}
+        AND id <> ALL($${excludeIdx}::int[])
+      ORDER BY id
+      LIMIT $${limitIdx}
+    `, ...selectValues);
+
+    const nextCursor = leads.length === limit ? Number(leads[leads.length - 1].id) : null;
+
+    console.log(`Returned ${leads.length} leads (cursor=${cursor}, excluded=${deliveredIds.length}, total=${totalMatched})`);
+
+    return res.json({
+      success: true,
+      data:    leads,
+      nextCursor,
+      hasMore: nextCursor !== null,
+      totalMatched,
     });
 
   } catch (error) {

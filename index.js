@@ -54,6 +54,7 @@ const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob'
 const { startReminderJob,   stopReminderJob   } = require('./jobs/reminderJob');
 
 
+
 // Validate environment variables
 validateConfig();
 
