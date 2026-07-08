@@ -118,31 +118,92 @@ const applyAnswerToMissingField = (updates, state, latestMessage) => {
   return updates;
 };
 
+// Build identity/business/expert updates from Claude-extracted context
+const applyExtractedContext = (ctx, state) => {
+  if (!ctx || typeof ctx !== 'object') return {};
+
+  const updates = {};
+
+  // Identity fields
+  const identityPatch = {};
+  if (ctx.name)  identityPatch.name  = ctx.name;
+  if (ctx.email) identityPatch.email = ctx.email;
+  if (ctx.phone) identityPatch.phone = ctx.phone;
+  if (Object.keys(identityPatch).length) {
+    updates.identity = mergeDefined(state.identity, identityPatch);
+  }
+
+  // userType
+  if (ctx.userType) updates.userType = ctx.userType;
+
+  // Business profile fields
+  const bizPatch = {};
+  if (ctx.companyName)    bizPatch.companyName    = ctx.companyName;
+  if (ctx.website)        bizPatch.website        = ctx.website;
+  if (ctx.industry)       bizPatch.industry       = ctx.industry;
+  if (ctx.targetCustomer) bizPatch.targetCustomer = ctx.targetCustomer;
+  if (Object.keys(bizPatch).length) {
+    updates.businessProfile = mergeDefined(state.businessProfile, bizPatch);
+  }
+
+  // Goal fields
+  if (ctx.goalDescription && !state.goal?.confirmed) {
+    updates.goal = mergeGoal({
+      currentGoal: state.goal,
+      goalUpdates: {
+        description:   ctx.goalDescription,
+        timeframeDays: ctx.goalTimeframeDays || null,
+        targetMetric:  ctx.goalTargetMetric  || ''
+      },
+      latestMessage: ctx.goalDescription,
+      isClarification: false
+    });
+  }
+
+  return updates;
+};
+
 const memoryAgentNode = async (state) => {
   const latestMessage = getLatestUserMessage(state.messages);
-  const identityUpdates = extractIdentityFields(latestMessage);
-  const detectedUserType = extractUserType(latestMessage);
-  const userType = state.userType || detectedUserType;
+
+  // ── Primary: use Claude-extracted context set by intentRouterNode ──────────
+  // extractedContext is cleared after use so it doesn't persist across turns
+  const claudeUpdates = state.extractedContext
+    ? applyExtractedContext(state.extractedContext, state)
+    : {};
+
+  // ── Fallback: regex extraction (runs when Claude extraction had nothing) ──
+  const identityFromRegex  = extractIdentityFields(latestMessage);
+  const detectedUserType   = extractUserType(latestMessage);
+
+  const userType = claudeUpdates.userType || state.userType || detectedUserType;
 
   const updates = {
-    identity: mergeDefined(state.identity, identityUpdates),
-    userType
+    ...claudeUpdates,
+    identity: mergeDefined(
+      claudeUpdates.identity || state.identity,
+      identityFromRegex
+    ),
+    userType,
+    extractedContext: null  // consumed — clear it
   };
 
-  if (userType === 'business') {
+  // Regex business/expert fields only if Claude didn't already supply them
+  if (userType === 'business' && !claudeUpdates.businessProfile) {
     updates.businessProfile = mergeDefined(
       state.businessProfile,
       extractBusinessFields(latestMessage)
     );
   }
 
-  if (userType === 'expert') {
+  if (userType === 'expert' && !claudeUpdates.expertProfile) {
     updates.expertProfile = mergeDefined(
       state.expertProfile,
       extractExpertFields(latestMessage)
     );
   }
 
+  // ── Goal confirmation / revision (regex is reliable here) ─────────────────
   if (shouldCaptureGoal(state)) {
     if (state.nextAction === 'confirm_goal' && detectGoalRevisionRequest(latestMessage)) {
       updates.goal = null;
@@ -152,7 +213,7 @@ const memoryAgentNode = async (state) => {
         confirmed: true,
         confirmedAt: new Date().toISOString()
       };
-    } else if (state.nextAction !== 'confirm_goal') {
+    } else if (state.nextAction !== 'confirm_goal' && !updates.goal) {
       const goalUpdates = extractGoalFields(latestMessage, userType);
       if (goalUpdates.description) {
         updates.goal = mergeGoal({
@@ -165,6 +226,7 @@ const memoryAgentNode = async (state) => {
     }
   }
 
+  // ── URL evidence extraction ────────────────────────────────────────────────
   if (shouldCaptureEvidence(state)) {
     const businessEvidence = createBusinessEvidence(state.businessEvidence);
     const urls = extractWebsiteUrls(latestMessage);

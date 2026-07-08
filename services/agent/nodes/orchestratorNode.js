@@ -1,6 +1,7 @@
 const { identityFields, businessFields, expertFields } = require('../agentConfig');
 const { generateGoalDefinition } = require('../../anthropicService');
 const { buildMarketplaceProjectMatch } = require('../projectCatalogService');
+const { getByAction, CAPABILITIES } = require('../capabilityRegistry');
 
 const hasValue = (value) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -109,7 +110,55 @@ const buildProjectMatchUiRequest = (projectMatch) => ({
 const orchestratorNode = async (state) => {
   const latestMessage = getLatestUserMessage(state.messages);
 
-  if (state.interruptIntent?.intent === 'find_marketplace_project' || state.nextAction === 'match_marketplace_project') {
+  // ── Active email-campaign flow is modal ────────────────────────────────
+  // Once the email specialist is collecting a brief / awaiting approval /
+  // choosing recipients, keep every turn routed to it — even if the router
+  // matched another capability (e.g. 'leads' while describing the audience).
+  if (state.emailBrief && state.emailBrief.stage && state.emailBrief.stage !== 'complete') {
+    return {
+      phase: 'email_flow',
+      nextAction: 'run_email_agent',
+      missingField: null,
+      uiRequest: null,
+      profileProgress: getProfileProgress(state),
+      response: ''
+    };
+  }
+
+  // ── Registry-based capability routing ──────────────────────────────────
+  // Any capability whose nextAction is already set gets routed to its specialist.
+  // The specialist node handles the actual work — orchestrator just passes through.
+  // project_match is the only one handled inline here (no separate node).
+  const matchedCapability = state.matchedCapability
+    ? getByAction(state.nextAction)
+    : null;
+
+  if (matchedCapability && matchedCapability.node) {
+    // Has a dedicated specialist node — route to it (workflow.js handles the edge)
+    return {
+      phase:         state.matchedCapability.id,
+      nextAction:    matchedCapability.nextAction,
+      missingField:  null,
+      uiRequest:     null,
+      profileProgress: getProfileProgress(state),
+      response:      ''
+    };
+  }
+
+  // ── Unmet need — platform doesn't have this capability yet ─────────────
+  if (state.unmetNeed) {
+    const capabilityList = CAPABILITIES.map((c) => `• ${c.description.split('.')[0]}`).join('\n');
+    return {
+      phase:         state.phase,
+      nextAction:    'respond',
+      missingField:  null,
+      uiRequest:     null,
+      profileProgress: getProfileProgress(state),
+      response:      `I can't help with "${state.unmetNeed}" yet. Here's what I can do right now:\n\n${capabilityList}\n\nWhich of these would be useful?`
+    };
+  }
+
+  if (state.nextAction === 'match_marketplace_project') {
     const projectMatch = await buildMarketplaceProjectMatch({
       query: latestMessage,
       limit: 3

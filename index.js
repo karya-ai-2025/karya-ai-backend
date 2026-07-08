@@ -53,6 +53,9 @@ const hitlRoutes = require('./routes/hitlRoutes'); // Human-in-the-loop approval
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
 const { startReminderJob,   stopReminderJob   } = require('./jobs/reminderJob');
 
+// Product analytics module (independent of Azure Application Insights)
+const analytics = require('./analytics');
+
 
 
 // Validate environment variables
@@ -71,12 +74,43 @@ app.set('trust proxy', 1);
 // Set security HTTP headers
 app.use(helmet());
 
+// Origins allowed to call this API:
+//  - the configured frontend URL (FRONTEND_URL)
+//  - any deployed origins listed in CORS_ORIGINS (comma-separated) — set this in
+//    production to your deployed frontend URL(s)
+//  - local dev + VS Code / dev-tunnel preview URLs
+const allowedOrigins = [
+  config.frontendUrl,
+  ...String(process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()),
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+].filter(Boolean);
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // non-browser / same-origin requests (curl, server-to-server)
+  if (allowedOrigins.includes(origin)) return true;
+  try {
+    // e.g. https://w2qtdfwt-3000.inc1.devtunnels.ms  → allow any *.devtunnels.ms
+    const host = new URL(origin).hostname;
+    if (host.endsWith('.devtunnels.ms')) return true;
+  } catch { /* malformed origin → fall through to deny */ }
+  return false;
+};
+
+// Private Network Access: a public HTTPS origin (dev tunnel) calling a loopback
+// address (localhost:5000) is blocked by Chrome unless we echo this on the preflight.
+app.use((req, res, next) => {
+  if (isAllowedOrigin(req.headers.origin)) {
+    res.header('Access-Control-Allow-Private-Network', 'true');
+  }
+  next();
+});
+
 // Enable CORS
 app.use(cors({
-  origin: config.frontendUrl,
+  origin: (origin, cb) => (isAllowedOrigin(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'))),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id']
 }));
 
 // Rate limiting
@@ -97,6 +131,15 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // Parse cookies
 app.use(cookieParser());
+
+// ============================================
+// PRODUCT ANALYTICS
+// API-call tracking is intentionally DISABLED — Azure Application Insights
+// already covers API/infra metrics (requests, durations, status codes), so
+// recording them again here is redundant and floods the DB. Product analytics
+// tracks page views + meaningful product events only (see /api/analytics/*).
+// To re-enable API tracking: app.use(analytics.apiTracker);
+// ============================================
 
 // ============================================
 // ROUTES
@@ -132,6 +175,18 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Root route — API-only backend has no homepage; this gives health probes and
+// anyone hitting the base URL a friendly 200 instead of a 404 (the frontend is
+// a separate Next.js app). Deep health check lives at /api/health.
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Karya-AI API is running',
+    environment: config.env,
+    health: '/api/health'
+  });
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/profiles', profileRoutes);
@@ -154,6 +209,7 @@ app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
 app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
+app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
 
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
 app.use('/api/resources',        resourceRoutes);        // Resource hub — must be before /api planRoutes
@@ -167,6 +223,7 @@ app.use('/api/credits', creditRoutes); // Credit consumption tracking
 // app.use('/api/conversations', conversationRoutes); // Agent conversations — file not created yet
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
+app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates

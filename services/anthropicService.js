@@ -166,6 +166,70 @@ Rules:
 - Do not choose find_marketplace_project when the user is simply confirming a recommended project already shown in the plan.
 `.trim();
 
+// Built dynamically at call time so new capabilities auto-appear in the prompt
+const buildContextExtractionSystemPrompt = (capabilitiesDescription) => `
+You are a context extractor for Karya AI, a B2B growth platform.
+
+Read the user message and conversation context. Return ONE JSON object that:
+1. Detects if the user is interrupting the current flow (interruptType)
+2. Matches the message to an available platform capability (matchedCapabilityId)
+3. Extracts every field explicitly stated in the message (extractedFields)
+
+Return only valid JSON, no explanation:
+{
+  "interruptType": null | "change_goal" | "add_diagnostic_evidence" | "rerun_diagnostic" | "regenerate_plan",
+  "matchedCapabilityId": null | "<id from the capabilities list below>",
+  "confidence": 0.0-1.0,
+  "reasoning": "one sentence",
+  "extractedFields": {
+    "name": null,
+    "email": null,
+    "phone": null,
+    "userType": null,
+    "companyName": null,
+    "website": null,
+    "industry": null,
+    "targetCustomer": null,
+    "goalDescription": null,
+    "goalTimeframeDays": null,
+    "goalTargetMetric": null,
+    "industry": null,
+    "location": null,
+    "segment": null,
+    "seniority": null,
+    "title": null,
+    "company": null,
+    "need": null
+  },
+  "unmetNeed": null
+}
+
+Interrupt rules (check these first):
+- change_goal: user explicitly says they want to change, revise, or replace their goal
+- add_diagnostic_evidence: user wants to add a website URL for business review
+- rerun_diagnostic: user wants to redo the business review from scratch
+- regenerate_plan: user wants to rebuild only the 30-60-90 plan
+- If none of these apply, set interruptType to null
+
+Available platform capabilities (match matchedCapabilityId to one of these ids):
+${capabilitiesDescription}
+
+Capability matching rules:
+- Only set matchedCapabilityId when confidence > 0.65
+- If the message is a short reply to the agent's last question (yes, no, a name, a number): set matchedCapabilityId null
+- If the user wants something not in the capabilities list: set matchedCapabilityId null and describe it in unmetNeed
+- unmetNeed: short plain description of what the user wants that no capability covers, or null
+
+Field extraction rules:
+- Only extract what is EXPLICITLY stated. Never guess.
+- Return null for any field not in the message.
+- userType: "business" = running a company/startup. "expert" = consultant/freelancer/agency. null if unclear.
+- goalTimeframeDays: 30, 60, or 90 only. "2 months"=60, "a quarter"=90, "next month"=30.
+- segment: one of — startup, smb, small business, mid-market, enterprise, large enterprise
+- seniority: one of — decision maker, c-suite, vp, director, manager, senior ic, individual contributor
+- title: a SPECIFIC job title the user names (e.g. "project manager", "head of sales", "devops engineer"). Use this for concrete roles. Use seniority only for the broad levels listed above. If the user names an exact role (e.g. "project managers"), set title and leave seniority null. If they say a broad level (e.g. "decision makers"), set seniority and leave title null.
+`.trim();
+
 let anthropicClient;
 
 const requireAnthropicConfig = (key, value) => {
@@ -510,11 +574,133 @@ const generateEvidenceSummary = async ({ sourceName, sourceType = 'website', ext
   }
 };
 
+const buildContextExtractionPrompt = ({ state }) => JSON.stringify({
+  currentPhase: state.phase,
+  nextAction: state.nextAction,
+  hasGoal: Boolean(state.goal?.description),
+  goalConfirmed: Boolean(state.goal?.confirmed),
+  hasPlan: Boolean(state.plan),
+  knownFields: {
+    name:           state.identity?.name           || null,
+    email:          state.identity?.email          || null,
+    companyName:    state.businessProfile?.companyName    || null,
+    industry:       state.businessProfile?.industry       || null,
+    targetCustomer: state.businessProfile?.targetCustomer || null
+  },
+  latestUserMessage: getLatestUserContent(state.messages),
+  recentMessages: (state.messages || [])
+    .filter((m) => ['user', 'agent'].includes(m.role))
+    .slice(-6)
+    .map((m) => ({ role: m.role, content: m.content }))
+}, null, 2);
+
+const extractMessageContext = async ({ state, capabilitiesDescription }) => {
+  try {
+    const client = getAnthropicClient();
+    const response = await client.messages.create({
+      model: normalizeModel(config.anthropic.model),
+      max_tokens: Math.min(requireAnthropicConfig('ANTHROPIC_MAX_TOKENS', config.anthropic.maxTokens), 800),
+      system: buildContextExtractionSystemPrompt(capabilitiesDescription || ''),
+      messages: [{ role: 'user', content: buildContextExtractionPrompt({ state }) }]
+    });
+
+    const raw = extractText(response);
+    console.log('[extractMessageContext] RAW Claude output:', raw);
+
+    const parsed = parseJsonObject(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      console.log('[extractMessageContext] Failed to parse JSON from Claude');
+      return null;
+    }
+
+    console.log('[extractMessageContext] Parsed result:', JSON.stringify(parsed, null, 2));
+
+    return {
+      interruptType:         parsed.interruptType         || null,
+      matchedCapabilityId:   parsed.matchedCapabilityId   || null,
+      confidence:            Number(parsed.confidence     || 0),
+      reasoning:             parsed.reasoning             || '',
+      extractedFields:       parsed.extractedFields       || {},
+      unmetNeed:             parsed.unmetNeed             || null
+    };
+  } catch (err) {
+    console.log('[extractMessageContext] Claude call threw error:', err?.message || err);
+    return null;
+  }
+};
+
+// ── Email campaign copywriter ────────────────────────────────────────────────
+// Drafts a primary cold email + one follow-up. Placeholders are limited to the
+// keys that campaignProcessor.personalizeContent actually fills.
+const EMAIL_PLACEHOLDERS = ['firstName', 'lastName', 'fullName', 'company', 'jobTitle', 'industry'];
+
+const buildEmailCopySystemPrompt = () => `
+You are a senior B2B cold-email copywriter for Karya AI.
+Write a short outbound sequence: one primary email + one follow-up.
+
+Return ONLY valid JSON, no explanation:
+{
+  "subject": "primary subject line",
+  "body": "primary email body",
+  "followUpSubject": "follow-up subject line",
+  "followUpBody": "follow-up email body"
+}
+
+Rules:
+- Personalization: you MAY use ONLY these placeholders, in curly braces: ${EMAIL_PLACEHOLDERS.map((p) => `{${p}}`).join(', ')}.
+  Never invent other placeholders. Always open with {firstName}.
+- Primary email: 90-140 words, plain text, one clear call to action, no fluff, no emoji, no markdown.
+- Follow-up: 40-70 words, references the first email lightly ("following up on my note"), one CTA.
+- Sound human and specific to the recipient's industry. No spammy phrases ("act now", "limited time").
+- Do not include a subject prefix like "Subject:". Just the text.
+`.trim();
+
+const buildEmailCopyPrompt = ({ state, audienceSummary, recipientCount, instruction }) => JSON.stringify({
+  sender: {
+    company: state.businessProfile?.companyName || null,
+    industry: state.businessProfile?.industry || null,
+    website: state.businessProfile?.website || null,
+    valueProposition: state.businessProfile?.targetCustomer || null,
+    goal: state.goal?.description || null
+  },
+  audience: audienceSummary || null,
+  recipientCount: recipientCount || null,
+  userInstruction: instruction || null
+}, null, 2);
+
+const generateEmailCampaignCopy = async ({ state, audienceSummary, recipientCount, instruction }) => {
+  try {
+    const client = getAnthropicClient();
+    const response = await client.messages.create({
+      model: normalizeModel(config.anthropic.model),
+      max_tokens: Math.min(requireAnthropicConfig('ANTHROPIC_MAX_TOKENS', config.anthropic.maxTokens), 1500),
+      system: buildEmailCopySystemPrompt(),
+      messages: [{ role: 'user', content: buildEmailCopyPrompt({ state, audienceSummary, recipientCount, instruction }) }]
+    });
+
+    const raw = extractText(response);
+    const parsed = parseJsonObject(raw);
+    if (!parsed || !parsed.subject || !parsed.body) return null;
+
+    return {
+      subject:         String(parsed.subject).trim(),
+      body:            String(parsed.body).trim(),
+      followUpSubject: parsed.followUpSubject ? String(parsed.followUpSubject).trim() : '',
+      followUpBody:    parsed.followUpBody ? String(parsed.followUpBody).trim() : ''
+    };
+  } catch (err) {
+    console.log('[generateEmailCampaignCopy] failed:', err?.message || err);
+    return null;
+  }
+};
+
 module.exports = {
   generateSupportReply,
   generateGoalDefinition,
   routeAgentIntent,
   generateGapDiagnostic,
   generateThirtySixtyNinetyPlan,
-  generateEvidenceSummary
+  generateEvidenceSummary,
+  extractMessageContext,
+  generateEmailCampaignCopy
 };

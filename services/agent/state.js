@@ -28,7 +28,15 @@ const AgentStateAnnotation = Annotation.Root({
   uiRequest: Annotation({ reducer: replaceValue, default: () => null }),
   response: Annotation({ reducer: replaceValue, default: () => '' }),
   memorySummary: Annotation({ reducer: replaceValue, default: () => null }),
-  profileProgress: Annotation({ reducer: replaceValue, default: () => ({}) })
+  profileProgress: Annotation({ reducer: replaceValue, default: () => ({}) }),
+  extractedContext: Annotation({ reducer: replaceValue, default: () => null }),
+  leadsFilter: Annotation({ reducer: replaceValue, default: () => null }),
+  leadsFilterDelta: Annotation({ reducer: replaceValue, default: () => null }),
+  emailBrief: Annotation({ reducer: replaceValue, default: () => null }),
+  emailDraft: Annotation({ reducer: replaceValue, default: () => null }),
+  emailCampaign: Annotation({ reducer: replaceValue, default: () => null }),
+  matchedCapability: Annotation({ reducer: replaceValue, default: () => null }),
+  unmetNeed: Annotation({ reducer: replaceValue, default: () => null })
 });
 
 const createInitialAgentState = (overrides = {}) => ({
@@ -58,6 +66,14 @@ const createInitialAgentState = (overrides = {}) => ({
   response: '',
   memorySummary: null,
   profileProgress: {},
+  extractedContext: null,
+  leadsFilter: null,
+  leadsFilterDelta: null,
+  emailBrief: null,
+  emailDraft: null,
+  emailCampaign: null,
+  matchedCapability: null,
+  unmetNeed: null,
   ...overrides
 });
 
