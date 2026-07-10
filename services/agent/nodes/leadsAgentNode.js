@@ -32,6 +32,24 @@ const resolveSegment = async (segment) => {
   } catch { return null; }
 };
 
+// Resolve an industry phrase → the canonical industry_name from tbl_gtm_industry,
+// tolerant of "&" vs "and", spacing, and punctuation (so "media&entertainment",
+// "media and entertainment", "Media & Entertainment" all match the stored value).
+const resolveIndustry = async (industry) => {
+  if (!industry) return null;
+  const input = industry.trim();
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT industry_name FROM tbl_gtm_industry
+       WHERE regexp_replace(lower(replace(industry_name, '&', 'and')), '[^a-z0-9]', '', 'g')
+           = regexp_replace(lower(replace($1, '&', 'and')), '[^a-z0-9]', '', 'g')
+       LIMIT 1`,
+      input
+    );
+    return rows[0]?.industry_name || input; // fall back to the raw input if not found
+  } catch { return input; }
+};
+
 // Resolve seniority name → title keyword patterns from tbl_seniority
 const resolveSeniority = async (seniority) => {
   if (!seniority) return null;
@@ -101,7 +119,8 @@ const leadsAgentNode = async (state) => {
   }
 
   // ── Step 1: Resolve all mapping tables + delivered IDs in parallel ──────
-  const [regionCountries, empRange, titleKeywords, crmDocs] = await Promise.all([
+  const [industryName, regionCountries, empRange, titleKeywords, crmDocs] = await Promise.all([
+    resolveIndustry(filter.industry),
     resolveRegion(filter.location),
     resolveSegment(filter.segment),
     resolveSeniority(filter.seniority),
@@ -123,10 +142,10 @@ const leadsAgentNode = async (state) => {
   const filterValues  = [];
   const filterClauses = [];
 
-  // Industry — required if provided, otherwise match all
+  // Industry — resolved to the canonical name (tolerant of &/and/spacing)
   if (filter.industry) {
     filterClauses.push(`"GTM Industry" ILIKE '%' || $${filterValues.length + 1} || '%'`);
-    filterValues.push(filter.industry.trim());
+    filterValues.push(industryName);
   }
 
   // Company name — fuzzy

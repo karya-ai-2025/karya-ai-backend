@@ -4,6 +4,39 @@ const {
   deleteAttachmentBlob,
   uploadAttachmentBuffer
 } = require('../services/blobStorageService');
+// const { readFormFields } = require('../services/pdfFillService'); // PDF-per-lead feature disabled for live (uploadDocumentTemplate route is off)
+
+// Lead attributes a PDF field can be mapped to (matches campaign selectedLeads).
+const LEAD_ATTRIBUTES = ['firstName', 'lastName', 'fullName', 'company', 'jobTitle', 'industry', 'email', 'phone'];
+
+// Auto-map a PDF field name to a lead attribute when the names line up.
+const autoMapField = (fieldName = '') => {
+  const norm = String(fieldName).toLowerCase().replace(/[^a-z]/g, '');
+  return LEAD_ATTRIBUTES.find((attr) => attr.toLowerCase() === norm) || '';
+};
+
+// Validate + normalize a documentTemplate before saving it on a template.
+const normalizeDocumentTemplate = (doc, userId) => {
+  if (!doc || !doc.blobName) return undefined; // clearing / none
+  assertUserOwnsAttachmentBlob(userId, doc.blobName);
+  return {
+    originalName: String(doc.originalName || 'document.pdf').slice(0, 255),
+    fileName: String(doc.fileName || doc.originalName || 'document.pdf').slice(0, 255),
+    blobName: doc.blobName,
+    contentType: 'application/pdf',
+    size: Number(doc.size) || 0,
+    uploadedAt: doc.uploadedAt ? new Date(doc.uploadedAt) : new Date(),
+    fields: Array.isArray(doc.fields)
+      ? doc.fields
+          .filter((f) => f && f.name)
+          .map((f) => ({
+            name: String(f.name).slice(0, 200),
+            mapsTo: LEAD_ATTRIBUTES.includes(f.mapsTo) ? f.mapsTo : '',
+            defaultValue: String(f.defaultValue || '').slice(0, 500)
+          }))
+      : []
+  };
+};
 
 const MAX_ATTACHMENT_FILE_SIZE_MB = parseInt(process.env.EMAIL_ATTACHMENT_MAX_FILE_SIZE_MB, 10) || 10;
 const MAX_ATTACHMENT_TOTAL_SIZE_MB = parseInt(process.env.EMAIL_ATTACHMENT_MAX_TOTAL_SIZE_MB, 10) || 20;
@@ -252,14 +285,18 @@ const updateEmailTemplate = async (req, res) => {
     // Update allowed fields
     const allowedFields = [
       'templateName', 'description', 'subject', 'emailBody',
-      'templateType', 'category', 'tags', 'availableVariables', 'settings', 'attachments'
+      'templateType', 'category', 'tags', 'availableVariables', 'settings', 'attachments', 'documentTemplate'
     ];
 
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
-        template[field] = field === 'attachments'
-          ? normalizeTemplateAttachments(req.body[field], userId)
-          : req.body[field];
+        if (field === 'attachments') {
+          template.attachments = normalizeTemplateAttachments(req.body[field], userId);
+        } else if (field === 'documentTemplate') {
+          template.documentTemplate = normalizeDocumentTemplate(req.body[field], userId);
+        } else {
+          template[field] = req.body[field];
+        }
       }
     });
 
@@ -578,6 +615,53 @@ const deleteEmailTemplateAttachment = async (req, res) => {
   }
 };
 
+// @desc    Upload a fillable PDF, detect its form fields, and return the blob
+//          metadata + fields so the frontend can map each field → a lead value.
+// @route   POST /api/email-templates/document/upload
+// @access  Private
+const uploadDocumentTemplate = async (req, res) => {
+  // PDF-per-lead feature disabled for live. The route is commented out, so this
+  // never runs — this guard just returns cleanly if it's ever reached.
+  return res.status(503).json({ success: false, message: 'The personalized PDF feature is temporarily unavailable.' });
+  // eslint-disable-next-line no-unreachable
+  try {
+    const userId = req.user.id || req.user._id;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'A PDF document is required' });
+    }
+    const isPdf = req.file.mimetype === 'application/pdf' || getFileExtension(req.file.originalname) === '.pdf';
+    if (!isPdf) {
+      return res.status(400).json({ success: false, message: 'Only PDF documents are supported' });
+    }
+
+    // Detect the fillable form fields BEFORE storing, so we can reject flat PDFs.
+    let detected;
+    try {
+      detected = await readFormFields(req.file.buffer);
+    } catch {
+      return res.status(400).json({ success: false, message: 'Could not read this PDF. Make sure it is a valid PDF file.' });
+    }
+    if (detected.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'This PDF has no fillable form fields. Add named text fields (e.g. firstName, company) in a PDF editor, then upload it.'
+      });
+    }
+
+    const meta = await uploadAttachmentBuffer({ userId, file: req.file });
+    const fields = detected.map((f) => ({ name: f.name, type: f.type, mapsTo: autoMapField(f.name), defaultValue: '' }));
+
+    res.status(201).json({
+      success: true,
+      data: { ...meta, fields },
+      message: `Uploaded. Detected ${fields.length} field${fields.length === 1 ? '' : 's'}.`
+    });
+  } catch (error) {
+    console.error('Error uploading document template:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: 'Failed to upload document', error: error.message });
+  }
+};
+
 module.exports = {
   getEmailTemplates,
   getEmailTemplate,
@@ -589,5 +673,6 @@ module.exports = {
   getPopularTemplates,
   duplicateEmailTemplate,
   uploadEmailTemplateAttachment,
-  deleteEmailTemplateAttachment
+  deleteEmailTemplateAttachment,
+  uploadDocumentTemplate
 };

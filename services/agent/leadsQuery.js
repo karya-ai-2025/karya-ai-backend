@@ -48,8 +48,25 @@ const resolveSeniority = async (seniority) => {
 
 // Build the WHERE clauses + values from a filter. Returns { clauses, values }.
 // `clauses` counts ONLY real filter conditions (not the email guard).
+// Resolve an industry phrase → canonical industry_name (tolerant of &/and/spacing).
+const resolveIndustry = async (industry) => {
+  if (!industry) return null;
+  const input = industry.trim();
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT industry_name FROM tbl_gtm_industry
+       WHERE regexp_replace(lower(replace(industry_name, '&', 'and')), '[^a-z0-9]', '', 'g')
+           = regexp_replace(lower(replace($1, '&', 'and')), '[^a-z0-9]', '', 'g')
+       LIMIT 1`,
+      input
+    );
+    return rows[0]?.industry_name || input;
+  } catch { return input; }
+};
+
 const buildFilterWhere = async (filter = {}) => {
-  const [regionCountries, empRange, titleKeywords] = await Promise.all([
+  const [industryName, regionCountries, empRange, titleKeywords] = await Promise.all([
+    resolveIndustry(filter.industry),
     resolveRegion(filter.location),
     resolveSegment(filter.segment),
     resolveSeniority(filter.seniority)
@@ -60,7 +77,7 @@ const buildFilterWhere = async (filter = {}) => {
 
   if (filter.industry) {
     clauses.push(`"GTM Industry" ILIKE '%' || $${values.length + 1} || '%'`);
-    values.push(filter.industry.trim());
+    values.push(industryName);
   }
   if (filter.company) {
     clauses.push(`"Account Name" ILIKE '%' || $${values.length + 1} || '%'`);

@@ -14,6 +14,7 @@ const {
   duplicateEmailTemplate,
   uploadEmailTemplateAttachment,
   deleteEmailTemplateAttachment
+  // uploadDocumentTemplate  // PDF-per-lead feature disabled for live (see route below)
 } = require('../controllers/emailTemplateController');
 
 const maxAttachmentFileSizeMb = parseInt(process.env.EMAIL_ATTACHMENT_MAX_FILE_SIZE_MB, 10) || 10;
@@ -25,23 +26,26 @@ const upload = multer({
   }
 });
 
-const handleAttachmentUpload = (req, res, next) => {
-  upload.single('attachment')(req, res, (error) => {
+const handleUpload = (fieldName) => (req, res, next) => {
+  upload.single(fieldName)(req, res, (error) => {
     if (!error) return next();
 
     if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
         success: false,
-        message: `Attachment size cannot exceed ${maxAttachmentFileSizeMb}MB`
+        message: `File size cannot exceed ${maxAttachmentFileSizeMb}MB`
       });
     }
 
     return res.status(400).json({
       success: false,
-      message: error.message || 'Invalid attachment upload'
+      message: error.message || 'Invalid file upload'
     });
   });
 };
+
+const handleAttachmentUpload = handleUpload('attachment');
+// const handleDocumentUpload = handleUpload('document'); // PDF-per-lead feature disabled for live
 
 // Apply authentication middleware to all routes
 router.use(protect);
@@ -51,6 +55,8 @@ router.get('/categories', getTemplateCategories);  // GET /api/email-templates/c
 router.get('/popular', getPopularTemplates);       // GET /api/email-templates/popular
 router.post('/attachments/upload', handleAttachmentUpload, uploadEmailTemplateAttachment);
 router.delete('/attachments', deleteEmailTemplateAttachment);
+// PDF-per-lead feature disabled for live — re-enable this route + the import/handler above to restore.
+// router.post('/document/upload', handleDocumentUpload, uploadDocumentTemplate); // fillable PDF → detect fields
 
 // Template CRUD routes
 router.route('/')

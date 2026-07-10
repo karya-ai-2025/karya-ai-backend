@@ -1,5 +1,8 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Build engines for local (Windows/macOS) AND Azure App Service Linux (Debian).
+  // Without the Debian targets, a Windows-generated client 500s on Linux.
+  binaryTargets = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x"]
 }
 
 datasource db {

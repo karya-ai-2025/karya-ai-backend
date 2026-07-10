@@ -141,6 +141,7 @@ const importLeads = async (req, res) => {
   // ── 4. Transaction: TEMP TABLE → batched INSERTs → copy into real table ────
   // The real table (tbl_healthcare) only ever receives INSERTs.
   // No DELETE / UPDATE / DROP / TRUNCATE / ALTER is performed anywhere here.
+  let industriesAdded = 0;
   try {
     await prisma.$transaction(async (tx) => {
       // Staging table is session-scoped and dropped automatically on COMMIT
@@ -169,6 +170,20 @@ const importLeads = async (req, res) => {
       await tx.$executeRawUnsafe(
         `INSERT INTO tbl_healthcare (${COL_SQL_LIST}) SELECT ${COL_SQL_LIST} FROM staging_leads`
       );
+
+      // Auto-register any NEW industry names into the lookup table so they appear
+      // in the industry filter/dropdown. INSERT-only, case-insensitive, de-duped
+      // (both against existing rows and within this batch via DISTINCT).
+      industriesAdded = await tx.$executeRawUnsafe(`
+        INSERT INTO tbl_gtm_industry (industry_name)
+        SELECT DISTINCT TRIM(s."GTM Industry")
+        FROM staging_leads s
+        WHERE s."GTM Industry" IS NOT NULL AND TRIM(s."GTM Industry") <> ''
+          AND NOT EXISTS (
+            SELECT 1 FROM tbl_gtm_industry g
+            WHERE LOWER(TRIM(g.industry_name)) = LOWER(TRIM(s."GTM Industry"))
+          )
+      `);
     }, { timeout: 120_000 }); // 2-minute timeout for large files
 
     return res.json({
@@ -176,6 +191,7 @@ const importLeads = async (req, res) => {
       totalRows,
       imported: validRows.length,
       skipped:  skippedRows.length,
+      newIndustries: industriesAdded,
       skippedRows,
     });
   } catch (err) {

@@ -128,6 +128,24 @@ const emailTemplateSchema = new mongoose.Schema(
       }
     }],
 
+    // Optional fillable PDF that gets personalized per-recipient (mail-merge into
+    // a PDF). `fields` maps each PDF form-field name → the lead attribute that
+    // fills it. Blank/absent = no per-recipient document.
+    documentTemplate: {
+      originalName: { type: String, trim: true },
+      fileName: { type: String, trim: true },
+      blobName: { type: String, trim: true },
+      contentType: { type: String, default: 'application/pdf' },
+      size: { type: Number, min: 0 },
+      uploadedAt: { type: Date },
+      fields: [{
+        _id: false,
+        name: { type: String, trim: true },        // the PDF form-field name
+        mapsTo: { type: String, trim: true },       // lead attribute: firstName, company, jobTitle…
+        defaultValue: { type: String, default: '' } // used when the lead is missing that value
+      }]
+    },
+
     // Template Categories/Tags
     category: {
       type: String,

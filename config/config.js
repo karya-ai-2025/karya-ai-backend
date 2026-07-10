@@ -33,7 +33,9 @@ const config = {
     fromName:  process.env.MAILGUN_FROM_NAME  || 'Karya-AI',
   },
 
-  frontendUrl: process.env.FRONTEND_URL,
+  // Falls back to the production site so email links (Get Started, Verify Email,
+  // Login) are never broken if FRONTEND_URL isn't set on the host.
+  frontendUrl: process.env.FRONTEND_URL || 'https://www.karya-ai.com',
 
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   anthropic: {

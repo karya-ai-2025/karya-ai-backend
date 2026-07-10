@@ -688,7 +688,7 @@ router.post('/generate-for-download', [
       const industryRecord = await prisma.tbl_gtm_industry.findFirst({
         where: {
           industry_name: {
-            contains: industry.replace('-', ' '),
+            contains: industry.replace(/-/g, ' '),
             mode: 'insensitive'
           }
         }
@@ -1072,7 +1072,7 @@ router.get('/segments', [
     const industryRecord = await prisma.tbl_gtm_industry.findFirst({
       where: {
         industry_name: {
-          contains: industry.replace('-', ' '),
+          contains: industry.replace(/-/g, ' '),
           mode: 'insensitive'
         }
       }
@@ -1142,8 +1142,8 @@ router.post('/generate', protect, [
   body('location').optional().isString(),
   body('segment').optional().isString(),
   body('seniority').optional().isString(),
-  body('cursor').optional().isInt({ min: 0 }).withMessage('cursor must be a non-negative integer'),
-  body('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100'),
+  body('cursor').optional({ nullable: true }).isInt({ min: 0 }).withMessage('cursor must be a non-negative integer'),
+  body('limit').optional({ nullable: true }).isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100'),
   handleValidationErrors
 ], async (req, res) => {
   try {
@@ -1157,7 +1157,7 @@ router.post('/generate', protect, [
     // ── Step 1: Resolve industry + all three mapping tables + delivered IDs in parallel ──
     const [industryRecord, regionRow, segmentRow, seniorityRow, crmDocs] = await Promise.all([
       prisma.tbl_gtm_industry.findFirst({
-        where: { industry_name: { contains: industry.replace('-', ' '), mode: 'insensitive' } }
+        where: { industry_name: { contains: industry.replace(/-/g, ' '), mode: 'insensitive' } }
       }),
       location && location.trim()
         ? prisma.$queryRawUnsafe(
