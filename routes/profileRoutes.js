@@ -13,6 +13,7 @@ const {
   updateExpertProfile,
   updateExpertOnboarding,
   addPortfolioItem,
+  updatePortfolioItem,
   deletePortfolioItem,
   updateAvailability,
   toggleProfileVisibility,
@@ -61,6 +62,7 @@ router.put('/expert/onboarding', protect, updateExpertOnboarding);
 
 // Portfolio management
 router.post('/expert/portfolio', protect, addPortfolioItem);
+router.put('/expert/portfolio/:itemId', protect, updatePortfolioItem);
 router.delete('/expert/portfolio/:itemId', protect, deletePortfolioItem);
 
 // Availability

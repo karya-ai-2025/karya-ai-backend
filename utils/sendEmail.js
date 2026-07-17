@@ -26,6 +26,8 @@ const sendEmail = async (options) => {
     subject: options.subject,
     html:    options.html,
     text:    options.text || options.html.replace(/<[^>]*>/g, ''),
+    // Replies go to the original sender (e.g. a user contacting support)
+    ...(options.replyTo ? { 'h:Reply-To': options.replyTo } : {}),
   });
 
   const auth = Buffer.from(`api:${apiKey}`).toString('base64');

@@ -11,6 +11,15 @@ const mongoSanitize = require('express-mongo-sanitize');
 const { config, validateConfig } = require('./config/config');
 const connectDB = require('./config/db');
 
+// Silence non-error logs in production; dev keeps everything. Requires NODE_ENV
+// to be 'production' on the host (Azure App Setting). console.error / console.warn
+// are intentionally kept so real problems still surface in the logs.
+if (process.env.NODE_ENV === 'production') {
+  console.log = () => {};
+  console.debug = () => {};
+  console.info = () => {};
+}
+
 // Middleware
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
@@ -48,6 +57,7 @@ const adminRoutes       = require('./routes/adminRoutes');        // Admin analy
 const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
 const contentProjectRoutes = require('./routes/contentProjectRoutes'); // Content Project (LinkedIn + Newsletter)
 const hitlRoutes = require('./routes/hitlRoutes'); // Human-in-the-loop approval requests
+const supportRoutes = require('./routes/supportRoutes'); // Support contact emails + update subscriptions
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
@@ -209,6 +219,7 @@ app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
 app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
+app.use('/api/support', supportRoutes); // Support contact emails + update subscriptions
 app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
 
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)

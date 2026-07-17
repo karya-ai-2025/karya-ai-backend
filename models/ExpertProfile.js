@@ -23,7 +23,11 @@ const expertProfileSchema = new mongoose.Schema(
     bio: {
       type: String,
       trim: true,
-      maxlength: [2000, 'Bio cannot exceed 2000 characters']
+      maxlength: [2500, 'Bio cannot exceed 2500 characters'],
+      validate: {
+        validator: (v) => !v || v.trim().split(/\s+/).length <= 300,
+        message: 'Bio cannot exceed 300 words'
+      }
     },
     yearsOfExperience: {
       type: Number,
@@ -227,6 +231,16 @@ const expertProfileSchema = new mongoose.Schema(
       dribbble: { type: String, trim: true },
       portfolio: { type: String, trim: true },
       other: { type: String, trim: true }
+    },
+
+    // ============================================
+    // SUPPORT & UPDATES
+    // ============================================
+    support: {
+      emailsSent: { type: Number, default: 0, min: 0 },   // support emails sent (max 3)
+      subscribed: { type: Boolean, default: false },       // subscribed to status updates
+      subscribeEmail: { type: String, trim: true },
+      subscribedAt: { type: Date }
     },
 
     // ============================================

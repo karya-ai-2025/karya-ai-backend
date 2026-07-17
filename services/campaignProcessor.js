@@ -11,6 +11,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const stripHtml = (html = '') => html.replace(/<[^>]*>/g, '');
 
+// Bodies with inline formatting (<b>, <i>, <a>…) but no block structure lose
+// their line breaks when sent as HTML — convert \n → <br/> so spacing survives.
+// Full HTML templates (<p>/<div>/<br> present) are left untouched.
+const preserveLineBreaks = (body = '') => {
+  if (!/<\/?[a-z][\s\S]*>/i.test(body)) return body;
+  if (/<(br|p|div|table|ul|ol|h[1-6])[\s/>]/i.test(body)) return body;
+  return body.replace(/\r\n/g, '\n').replace(/\n/g, '<br/>');
+};
+
 const normalizeAttachmentMetadata = (attachments = []) => {
   if (!Array.isArray(attachments)) return [];
 
@@ -218,7 +227,7 @@ const processCampaign = async (campaignId) => {
       const result = await sendEmail({
         to: campaignEmail.leadEmail,
         subject: campaignEmail.personalizedSubject,
-        html: isTextOnly ? undefined : campaignEmail.personalizedBody,
+        html: isTextOnly ? undefined : preserveLineBreaks(campaignEmail.personalizedBody),
         text: isTextOnly ? campaignEmail.personalizedBody : stripHtml(campaignEmail.personalizedBody),
         attachments: mailAttachments
       });

@@ -470,6 +470,7 @@ const getOnboardingStatus = asyncHandler(async (req, res, next) => {
   
   res.status(200).json({
     success: true,
+    profileId: profile._id, // ExpertProfile id — used to open the public expert profile
     onboarding: user.onboarding?.expert || { currentStep: 0, completed: false },
     data: {
       // Step 1 data

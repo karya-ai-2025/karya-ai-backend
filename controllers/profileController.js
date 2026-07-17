@@ -229,6 +229,38 @@ const addPortfolioItem = asyncHandler(async (req, res, next) => {
 });
 
 /**
+ * @desc    Update a portfolio item
+ * @route   PUT /api/profiles/expert/portfolio/:itemId
+ * @access  Private
+ */
+const updatePortfolioItem = asyncHandler(async (req, res, next) => {
+  const { itemId } = req.params;
+  const user = await User.findById(req.user._id);
+
+  if (!user.hasExpertProfile) {
+    return next(new AppError('You don\'t have an Expert profile yet', 404));
+  }
+
+  const profile = await ExpertProfile.findById(user.profiles.expert);
+  if (!profile) return next(new AppError('Expert profile not found', 404));
+
+  const item = profile.portfolio.id(itemId);
+  if (!item) return next(new AppError('Portfolio item not found', 404));
+
+  ['title', 'client', 'description', 'results', 'category', 'link', 'images', 'attachments'].forEach((f) => {
+    if (req.body[f] !== undefined) item[f] = req.body[f];
+  });
+
+  await profile.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Portfolio item updated successfully',
+    item
+  });
+});
+
+/**
  * @desc    Delete portfolio item
  * @route   DELETE /api/profiles/expert/portfolio/:itemId
  * @access  Private
@@ -405,6 +437,7 @@ module.exports = {
   updateExpertProfile,
   updateExpertOnboarding,
   addPortfolioItem,
+  updatePortfolioItem,
   deletePortfolioItem,
   updateAvailability,
   toggleProfileVisibility,
