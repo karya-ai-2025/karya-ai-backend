@@ -7,6 +7,7 @@ const {
   purchaseCredits
 } = require('../controllers/creditController');
 const { protect } = require('../middleware/authMiddleware');
+const { blockPurchases } = require('../middleware/purchaseGuard');
 
 const router = express.Router();
 
@@ -53,6 +54,6 @@ router.get('/:id', getCreditRecord);
  * @body {number} credits - Number of credits to purchase
  * @body {number} amount - Total amount for the purchase
  */
-router.post('/purchase', purchaseCredits);
+router.post('/purchase', blockPurchases, purchaseCredits);
 
 module.exports = router;

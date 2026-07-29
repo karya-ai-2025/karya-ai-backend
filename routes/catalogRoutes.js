@@ -3,6 +3,7 @@ const { query, param, body, validationResult } = require('express-validator');
 const ProjectCatalog = require('../models/ProjectCatalog');
 const ProjectPricing = require('../models/ProjectPricing');
 const ProjectUser    = require('../models/ProjectUser');
+const { blockPurchases } = require('../middleware/purchaseGuard');
 const ExpertProfile = require('../models/ExpertProfile');
 const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
@@ -229,7 +230,7 @@ router.get('/user/my-projects', protect, async (req, res) => {
 // Records a marketplace project purchase for the authenticated user.
 // Upserts so re-purchasing the same project just updates the tier.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/:slug/purchase', [
+router.post('/:slug/purchase', blockPurchases, [
   protect,
   param('slug').isString().trim(),
   body('tierId').isIn(['credit', 'bronze', 'silver', 'gold']).withMessage('Invalid tierId'),

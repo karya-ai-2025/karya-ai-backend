@@ -238,16 +238,20 @@ const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) =>
        </p>`;
 
   return baseTemplate(`
-    <h1 style="color:#1a1a1a;margin-bottom:20px;">Your Call is Confirmed! 🎉</h1>
+    <h1 style="color:#1a1a1a;margin-bottom:20px;">Your Meeting is Booked! 🎉</h1>
     <p>Hi ${name},</p>
-    <p>Your onboarding call with the Karya-AI team has been successfully scheduled.</p>
+    <p>Your meeting with <strong>Karya-AI</strong> is confirmed for the time below:</p>
     <div style="background:#f8f5ff;border-radius:12px;padding:20px;margin:20px 0;">
       <p style="margin:0 0 8px 0;"><strong>📅 Date:</strong> ${formattedDate}</p>
       <p style="margin:0;"><strong>🕐 Time:</strong> ${formattedTime}</p>
     </div>
+    <p style="margin-bottom:6px;"><strong>What happens on this call?</strong></p>
+    <p style="margin-top:0;">One of our experts will connect with you to get to know you and your business, understand your goals, and set up your profile <em>on your behalf</em> — so you're ready to go without any manual setup.</p>
     ${meetSection}
-    <p>During this 30-minute call, our team will help you get set up and answer any questions you have.</p>
-    <p>See you soon!</p>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin:24px 0;color:#166534;">
+      🔔 We'll also send you a reminder with your meeting link <strong>2–3 hours before</strong> the call, so you have everything ready.
+    </div>
+    <p>Looking forward to speaking with you!</p>
   `);
 };
 

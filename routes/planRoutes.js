@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { blockPurchases } = require('../middleware/purchaseGuard');
 const {
   getPlans,
   getPackagesByPlan,
@@ -23,7 +24,7 @@ router.use(protect); // Apply auth middleware to all routes below
 router.get('/user/current-plan', getCurrentUserPlan);
 router.get('/user/check-plan-access', checkUserPlanAccess);
 router.get('/user/billing-history', getUserBillingHistory);
-router.post('/user/upgrade-plan', createUserPlan);
-router.post('/user/simple-upgrade', simpleUpgrade);
+router.post('/user/upgrade-plan', blockPurchases, createUserPlan);
+router.post('/user/simple-upgrade', blockPurchases, simpleUpgrade);
 
 module.exports = router;

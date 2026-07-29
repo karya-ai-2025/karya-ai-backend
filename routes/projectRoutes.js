@@ -2,6 +2,7 @@ const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const Project = require('../models/Project');
 const ProjectUser = require('../models/ProjectUser');
+const { purchasesEnabled } = require('../middleware/purchaseGuard');
 const UserPlan = require('../models/UserPlan');
 const { incrementProjectCount } = require('../controllers/planController');
 const { protect } = require('../middleware/authMiddleware');
@@ -241,6 +242,15 @@ router.post('/:id/select', [
     let isNewProject = false;
 
     if (!projectUser) {
+      // Acquiring a NEW project is a purchase — blocked until payments are live.
+      // Existing owners skip this branch and still get access updated below.
+      if (!purchasesEnabled()) {
+        return res.status(403).json({
+          success: false,
+          code: 'PURCHASES_DISABLED',
+          message: 'Purchases are temporarily unavailable. Please check back soon.'
+        });
+      }
       // Create new ProjectUser entry
       projectUser = new ProjectUser({
         userId: req.user._id,
