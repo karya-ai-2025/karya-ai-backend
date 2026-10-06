@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { protect } = require('../middleware/authMiddleware');
+const { attachOrgContext } = require('../middleware/orgContext');
 const {
   getUserCrmObjects,
   getUserCrmObject,
@@ -24,6 +25,9 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 router.use(protect);
+
+// Resolve the caller's organization. Dormant until ORG_SCOPING is on.
+router.use(attachOrgContext);
 
 router
   .route('/')

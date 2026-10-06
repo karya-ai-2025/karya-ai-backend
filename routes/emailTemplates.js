@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { attachOrgContext } = require('../middleware/orgContext');
 const {
   getEmailTemplates,
   getEmailTemplate,
@@ -49,6 +50,9 @@ const handleAttachmentUpload = handleUpload('attachment');
 
 // Apply authentication middleware to all routes
 router.use(protect);
+
+// Resolve the caller's organization. Dormant until ORG_SCOPING is on.
+router.use(attachOrgContext);
 
 // Template utility routes (before /:id to avoid conflicts)
 router.get('/categories', getTemplateCategories);  // GET /api/email-templates/categories

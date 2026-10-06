@@ -8,6 +8,17 @@ const userPlanSchema = new mongoose.Schema(
       ref: 'User',
       required: [true, 'User ID is required']
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Which ORGANIZATION owns this record. userId above stays, but now means
+    // "who created it" rather than "who owns it" — queries scope on this.
+    //
+    // Optional for now so existing records stay readable during migration;
+    // tightened to required once every document is backfilled.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
 
     // Plan that was purchased
     planId: {
@@ -225,6 +236,9 @@ userPlanSchema.methods.hasEnoughCredits = function(requiredCredits) {
   const remainingCredits = this.totalCredits - this.creditsUsed;
   return remainingCredits >= requiredCredits;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userPlanSchema.index({ organizationId: 1, status: 1 });
 
 const UserPlan = mongoose.model('UserPlan', userPlanSchema);
 

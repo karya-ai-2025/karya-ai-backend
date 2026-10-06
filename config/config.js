@@ -74,6 +74,11 @@ const validateConfig = () => {
   });
 
   console.log("✅ Configuration validated");
+
+  // TEMPORARY: shout about every testing bypass that is currently on, so none
+  // of them can quietly survive into production. Remove with the flags.
+  require('./testingFlags').warnIfBypassing();
+  require('../middleware/purchaseGuard').warnIfPurchasesOpen();
 };
 
 module.exports = { config, validateConfig };

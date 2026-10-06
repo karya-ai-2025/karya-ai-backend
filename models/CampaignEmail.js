@@ -15,6 +15,17 @@ const campaignEmailSchema = new mongoose.Schema(
       required: [true, 'User ID is required'],
       index: true
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Which ORGANIZATION owns this record. userId above stays, but now means
+    // "who created it" rather than "who owns it" — queries scope on this.
+    //
+    // Optional for now so existing records stay readable during migration;
+    // tightened to required once every document is backfilled.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
 
     // Lead Information
     leadId: {
@@ -88,6 +99,17 @@ const campaignEmailSchema = new mongoose.Schema(
         message: 'Email type must be primary or follow-up'
       },
       default: 'primary',
+      index: true
+    },
+
+    // Which follow-up round this belongs to ('opened' | 'not-opened' |
+    // 'clicked' | 'all'). A campaign sends several follow-up rounds to
+    // different slices, so emailType alone cannot tell them apart — without
+    // this, the second round would be treated as a duplicate of the first and
+    // silently skipped.
+    roundSegment: {
+      type: String,
+      trim: true,
       index: true
     },
 
@@ -177,6 +199,42 @@ const campaignEmailSchema = new mongoose.Schema(
       },
       bounceReason: String,
       bounceCode: String
+    },
+
+    // ── Reply ────────────────────────────────────────────────────────────
+    // Mailgun's tracking webhook never reports replies — it only knows about
+    // mail we sent out. A reply arrives as an inbound email, matched back to
+    // this record by the In-Reply-To / References headers.
+    reply: {
+      from:        { type: String, trim: true },
+      subject:     { type: String, trim: true },
+      // The reply with quoted history stripped, which is what gets classified.
+      text:        { type: String, maxlength: 20000 },
+      // Everything including the quoted thread, kept for reading in full.
+      fullText:    { type: String, maxlength: 100000 },
+      messageId:   { type: String, trim: true },
+      receivedAt:  { type: Date },
+
+      // What the reply actually means, from Claude. This is what turns
+      // "34 replies" into "5 people want a meeting".
+      intent: {
+        type: String,
+        enum: [
+          'meeting_request',   // wants to talk — the one that matters
+          'interested',        // positive, no meeting asked for yet
+          'question',          // wants more information
+          'not_interested',
+          'unsubscribe',
+          'out_of_office',     // automated; not a real reply
+          'other'
+        ]
+      },
+      intentConfidence: { type: String, enum: ['high', 'medium', 'low'] },
+      intentReason:     { type: String, maxlength: 500 },
+      classifiedAt:     { type: Date },
+      // Set when classification ran without an API key, so the numbers are
+      // never silently trusted as real.
+      intentIsMock:     { type: Boolean, default: false }
     },
 
     // Error Handling
@@ -408,31 +466,54 @@ campaignEmailSchema.statics.getRetryEmails = function () {
 };
 
 campaignEmailSchema.statics.getCampaignStats = async function (campaignId) {
+  // Grouped by status AND emailType, because a campaign is several rounds:
+  // a primary blast, then follow-ups to slices of it. Counting them together
+  // makes "6 of 3 sent" out of 3 contacts each emailed twice — a true number
+  // measured against the wrong denominator.
   const stats = await this.aggregate([
     { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
     {
       $group: {
-        _id: '$status',
+        _id: { status: '$status', emailType: '$emailType' },
         count: { $sum: 1 }
       }
     }
   ]);
 
-  const result = {
+  const blank = () => ({
     total: 0,
     pending: 0,
     sent: 0,
     delivered: 0,
     opened: 0,
     clicked: 0,
+    replied: 0,
     bounced: 0,
+    spam: 0,
     failed: 0
-  };
-
-  stats.forEach(stat => {
-    result[stat._id] = stat.count;
-    result.total += stat.count;
   });
+
+  // `result` keeps its original flat shape — every email of every round — so
+  // existing callers keep working unchanged.
+  const result = blank();
+  const primary = blank();
+  const followUp = blank();
+
+  stats.forEach(({ _id, count }) => {
+    const status = _id.status;
+    const bucket = _id.emailType === 'primary' ? primary : followUp;
+
+    if (status in result) result[status] += count;
+    if (status in bucket) bucket[status] += count;
+
+    result.total += count;
+    bucket.total += count;
+  });
+
+  // primary  → one row per contact, so it measures against the lead list.
+  // followUp → extra touches, which have no per-contact denominator.
+  result.primary = primary;
+  result.followUp = followUp;
 
   return result;
 };
@@ -481,6 +562,9 @@ campaignEmailSchema.methods.toJSON = function () {
   delete email.__v;
   return email;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+campaignEmailSchema.index({ organizationId: 1, campaignId: 1 });
 
 const CampaignEmail = mongoose.model('CampaignEmail', campaignEmailSchema, 'campaign_emails');
 

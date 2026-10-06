@@ -16,6 +16,8 @@ const {
   resetPassword,
   changePassword,
   verifyEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
   resendVerification,
   updateProfile,
   checkEmail,
@@ -93,6 +95,20 @@ router.get(
   verifyEmailValidation,
   validateRequest,
   verifyEmail
+);
+
+// Verify email with the 6-digit code sent at registration
+router.post(
+  '/verify-otp',
+  emailLimiter,
+  verifyEmailOtp
+);
+
+// Send a fresh 6-digit code
+router.post(
+  '/resend-otp',
+  emailLimiter,
+  resendEmailOtp
 );
 
 // Resend verification email

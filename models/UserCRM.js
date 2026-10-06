@@ -57,6 +57,15 @@ const exportedLeadSchema = new mongoose.Schema(
     employees: {
       type: mongoose.Schema.Types.Mixed
     },
+    // Email verification status (from NeverBounce, via the EmailValidation cache).
+    // 'valid' | 'invalid' | 'catchall' | 'disposable' | 'unknown' | '' (unchecked)
+    verificationStatus: {
+      type: String,
+      default: ''
+    },
+    verifiedAt: {
+      type: Date
+    },
     rawData: {
       type: mongoose.Schema.Types.Mixed,
       default: {}
@@ -71,6 +80,17 @@ const userCrmSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: [true, 'User ID is required'],
+      index: true
+    },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Which ORGANIZATION owns this record. userId above stays, but now means
+    // "who created it" rather than "who owns it" — queries scope on this.
+    //
+    // Optional for now so existing records stay readable during migration;
+    // tightened to required once every document is backfilled.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
       index: true
     },
     crmObjectName: {
@@ -169,6 +189,9 @@ userCrmSchema.methods.toJSON = function () {
   delete crmObject.__v;
   return crmObject;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userCrmSchema.index({ organizationId: 1, createdAt: -1 });
 
 const UserCRM = mongoose.model('UserCRM', userCrmSchema, 'userCRM');
 

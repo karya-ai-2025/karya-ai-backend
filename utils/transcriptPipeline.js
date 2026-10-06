@@ -51,6 +51,7 @@ async function runTranscriptPipeline(scheduledCallId) {
       conferenceRecordId,
       rawTranscript,
       entries,
+      meetIsMock: meetMock,
       isMock: meetMock,
     });
 
@@ -68,6 +69,8 @@ async function runTranscriptPipeline(scheduledCallId) {
     // ── Step 3: Save extracted data ────────────────────────────────────────
     await CallTranscript.findByIdAndUpdate(transcript._id, {
       extractedData,
+      extractIsMock: isMockExtract,
+      // Combined flag the UI reads — recomputed here, never OR-ed onto a stale value.
       isMock:  meetMock || isMockExtract,
       status: 'extracted',
     });

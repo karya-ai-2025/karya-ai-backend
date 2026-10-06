@@ -4,8 +4,53 @@ const CampaignEmail = require('../models/CampaignEmail');
 const UserPlan = require('../models/UserPlan');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const CreditCost = require('../models/CreditCost');
-const { processCampaign, refundUnusedCredits } = require('../services/campaignProcessor');
-const { validateEmailBatch, normalizeEmail } = require('../services/neverBounceService');
+const UserCRM = require('../models/UserCRM');
+const CampaignICP = require('../models/CampaignICP');
+const { processCampaign, refundUnusedCredits, sendCampaignRound } = require('../services/campaignProcessor');
+
+// Status buckets used for campaign results + follow-up segmentation.
+const SEGMENT_STATUSES = {
+  opened: ['opened', 'clicked', 'replied'],
+  'not-opened': ['delivered', 'sent'],
+  clicked: ['clicked', 'replied'],
+  bounced: ['bounced', 'spam', 'failed'],
+  pending: ['pending', 'queued', 'sending']
+};
+const { validateEmailBatch, getCachedValidations, validateAndCache, normalizeEmail } = require('../services/neverBounceService');
+const { BYPASS_PAYWALL } = require('../config/testingFlags');
+const { tenantFilter, tenantStamp } = require('../middleware/orgContext');
+
+// Map a NeverBounce "result" to the small enum we store on saved leads.
+const toVerificationStatus = (result = {}) => {
+  if (result.isValid) return 'valid';
+  const s = String(result.status || 'unknown').toLowerCase();
+  return ['invalid', 'catchall', 'disposable', 'unknown'].includes(s) ? s : 'unknown';
+};
+
+// Write verification status back onto the user's saved leads (UserCRM), matched
+// by email, so saved-list cards show ✓/✗ without re-validating. Grouped by
+// status so it's a handful of updateMany calls, not one per lead.
+const persistVerificationToSavedLeads = async (userId, resultByEmail) => {
+  try {
+    const now = new Date();
+    const byStatus = {};
+    Object.values(resultByEmail).forEach((r) => {
+      const status = toVerificationStatus(r);
+      (byStatus[status] = byStatus[status] || []).push(r.email);
+    });
+    await Promise.all(
+      Object.entries(byStatus).map(([status, emails]) =>
+        UserCRM.updateMany(
+          { userId, 'leads.email': { $in: emails } },
+          { $set: { 'leads.$[el].verificationStatus': status, 'leads.$[el].verifiedAt': now } },
+          { arrayFilters: [{ 'el.email': { $in: emails } }] }
+        )
+      )
+    );
+  } catch (err) {
+    console.error('Failed to persist verification to saved leads:', err.message);
+  }
+};
 
 const isEmailLike = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 
@@ -20,11 +65,11 @@ const getCampaigns = async (req, res) => {
     const filters = {};
     if (status) filters.status = status;
 
-    const campaigns = await Campaign.findByUser(userId, filters)
+    const campaigns = await Campaign.findForTenant(tenantFilter(req), filters)
       .limit(limit * 1)
       .skip((page - 1) * limit);
 
-    const total = await Campaign.countDocuments({ userId, ...filters });
+    const total = await Campaign.countDocuments({ ...tenantFilter(req), ...filters });
 
     res.json({
       success: true,
@@ -54,10 +99,12 @@ const getCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId: req.user.id
+      ...tenantFilter(req)
     })
       .populate('emailTemplateId')
-      .populate('settings.followUpTemplateId');
+      .populate('settings.followUpTemplateId')
+      // The results page pre-selects each follow-up round's template from here.
+      .populate('sequenceTemplates.templateId', 'templateName subject emailBody');
 
     if (!campaign) {
       return res.status(404).json({
@@ -89,6 +136,7 @@ const createCampaign = async (req, res) => {
       name,
       description,
       emailTemplateId,
+      sequenceTemplates,
       selectedLeads,
       settings,
       tags,
@@ -100,7 +148,7 @@ const createCampaign = async (req, res) => {
     // Validate email template exists and belongs to user
     const emailTemplate = await EmailTemplate.findOne({
       _id: emailTemplateId,
-      userId: userId,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -109,6 +157,39 @@ const createCampaign = async (req, res) => {
         success: false,
         message: 'Email template not found or not accessible'
       });
+    }
+
+    // ── Sequence templates ────────────────────────────────────────────────
+    // Keep only steps whose template actually belongs to this user, so a
+    // crafted payload can't attach someone else's email content to a campaign.
+    const SEQUENCE_KEYS = ['initial', 'follow_up', 'recall', 'final'];
+    let cleanSequence = [];
+
+    if (Array.isArray(sequenceTemplates) && sequenceTemplates.length) {
+      const wanted = sequenceTemplates
+        .filter((s) => s && SEQUENCE_KEYS.includes(s.key) && s.templateId)
+        .map((s) => ({ key: s.key, templateId: String(s.templateId) }));
+
+      const owned = await EmailTemplate.find({
+        _id: { $in: wanted.map((w) => w.templateId) },
+        ...tenantFilter(req),
+        isActive: true
+      }).select('_id').lean();
+      const ownedIds = new Set(owned.map((t) => String(t._id)));
+
+      cleanSequence = wanted
+        .filter((w) => ownedIds.has(w.templateId))
+        .map((w) => ({
+          step: SEQUENCE_KEYS.indexOf(w.key) + 1,
+          key: w.key,
+          templateId: w.templateId
+        }))
+        .sort((a, b) => a.step - b.step);
+    }
+
+    // Step 1 always mirrors emailTemplateId, which the sender already uses.
+    if (!cleanSequence.some((s) => s.key === 'initial')) {
+      cleanSequence.unshift({ step: 1, key: 'initial', templateId: emailTemplate._id });
     }
 
     // Validate selected leads
@@ -124,7 +205,9 @@ const createCampaign = async (req, res) => {
       name,
       description,
       userId: userId,
+      ...tenantStamp(req),
       emailTemplateId,
+      sequenceTemplates: cleanSequence,
       selectedLeads,
       settings: {
         sendingRate: 100,
@@ -180,52 +263,77 @@ const validateCampaignEmails = async (req, res) => {
 
     const uniqueEmails = [...new Set(validLeadEmails.map((lead) => lead.email))];
     const validationCreditCost = await CreditCost.getCreditCost('VALIDATE_EMAIL');
-    const maxCreditsRequired = uniqueEmails.length * validationCreditCost;
 
-    if (maxCreditsRequired === 0) {
+    if (uniqueEmails.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'No valid email addresses were provided for validation'
       });
     }
 
+    // Partition: emails already in the cache (free) vs ones needing NeverBounce (charged)
+    const { cachedMap, toValidate } = await getCachedValidations(uniqueEmails);
+    const maxCreditsRequired = toValidate.length * validationCreditCost;
+
+    // Always read the plan (for the remaining-credits display); only ENFORCE and
+    // charge when there are genuinely new emails to validate.
     const userPlans = await UserPlan.findActiveByUser(userId);
     const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
 
-    if (!userPlan) {
-      return res.status(402).json({
-        success: false,
-        message: 'No active plan found. Please subscribe to a plan to validate emails.',
-        creditsRequired: maxCreditsRequired,
-        creditCostPerEmail: validationCreditCost,
-        remainingCredits: 0
-      });
+    // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
+    if (!BYPASS_PAYWALL && toValidate.length > 0) {
+      if (!userPlan) {
+        return res.status(402).json({
+          success: false,
+          message: 'No active plan found. Please subscribe to a plan to validate emails.',
+          creditsRequired: maxCreditsRequired,
+          creditCostPerEmail: validationCreditCost,
+          remainingCredits: 0
+        });
+      }
+      if (!userPlan.hasEnoughCredits(maxCreditsRequired)) {
+        const remainingCredits = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+        return res.status(402).json({
+          success: false,
+          message: `Insufficient credits. You need up to ${maxCreditsRequired} credits to validate ${toValidate.length} new email${toValidate.length !== 1 ? 's' : ''}, but you only have ${remainingCredits} credits remaining.`,
+          creditsRequired: maxCreditsRequired,
+          creditCostPerEmail: validationCreditCost,
+          remainingCredits
+        });
+      }
     }
+    // ─────────────────────────────────────────────────────────────────────
 
-    if (!userPlan.hasEnoughCredits(maxCreditsRequired)) {
-      const remainingCredits = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
-      return res.status(402).json({
-        success: false,
-        message: `Insufficient credits. You need up to ${maxCreditsRequired} credits to validate ${uniqueEmails.length} emails, but you only have ${remainingCredits} credits remaining.`,
-        creditsRequired: maxCreditsRequired,
-        creditCostPerEmail: validationCreditCost,
-        remainingCredits
-      });
-    }
-
-    const { results, errors } = await validateEmailBatch(uniqueEmails);
+    // Validate only the uncached emails (this also writes them to the cache).
+    const fresh = toValidate.length ? await validateAndCache(toValidate) : [];
+    const errors = [];
 
     const resultByEmail = {};
-    results.forEach((result) => {
+
+    // 1) Cached results (free — pulled from the EmailValidation cache)
+    Object.values(cachedMap).forEach((c) => {
+      resultByEmail[c.email] = {
+        email: c.email,
+        status: c.status || 'unknown',
+        subStatus: '',
+        isValid: c.status === 'valid',
+        isValidated: true,
+        cached: true,
+        details: { providerStatus: c.providerStatus || '' }
+      };
+    });
+
+    // 2) Freshly validated results (from NeverBounce)
+    fresh.forEach((result) => {
       const email = normalizeEmail(result.address || result.email_address || result.email);
       if (!email) return;
-
       resultByEmail[email] = {
         email,
         status: result.status || 'unknown',
         subStatus: result.sub_status || '',
         isValid: result.status === 'valid',
         isValidated: true,
+        cached: false,
         details: {
           didYouMean: result.did_you_mean || '',
           freeEmail: result.free_email,
@@ -238,25 +346,28 @@ const validateCampaignEmails = async (req, res) => {
       };
     });
 
+    // 3) Anything still missing → unknown
     uniqueEmails.forEach((email) => {
       if (!resultByEmail[email]) {
         resultByEmail[email] = {
-          email,
-          status: 'unknown',
-          subStatus: '',
-          isValid: false,
-          isValidated: true,
-          details: {}
+          email, status: 'unknown', subStatus: '', isValid: false, isValidated: true, cached: false, details: {}
         };
       }
     });
 
+    // Persist the status onto the user's saved leads so the cards show ✓/✗ later.
+    await persistVerificationToSavedLeads(userId, resultByEmail);
+
     const verifiedCount = Object.values(resultByEmail).filter((result) => result.isValidated).length;
     const validCount = Object.values(resultByEmail).filter((result) => result.isValid).length;
     const notValidCount = Object.values(resultByEmail).filter((result) => result.isValidated && !result.isValid).length;
-    const creditsConsumed = verifiedCount * validationCreditCost;
+    const cachedCount = Object.keys(cachedMap).length;
+    const freshCount = fresh.length;
 
-    if (creditsConsumed > 0) {
+    // Charge ONLY for emails actually sent to NeverBounce — cached ones are free.
+    const creditsConsumed = freshCount * validationCreditCost;
+
+    if (creditsConsumed > 0 && userPlan) {
       userPlan.creditsUsed += creditsConsumed;
       await userPlan.save();
 
@@ -271,7 +382,8 @@ const validateCampaignEmails = async (req, res) => {
           provider: 'neverbounce',
           requestedEmails: uniqueEmails.length,
           creditCostPerEmail: validationCreditCost,
-          verifiedEmails: verifiedCount,
+          verifiedEmails: freshCount,
+          cachedEmails: cachedCount,
           validEmails: validCount,
           notValidEmails: notValidCount
         },
@@ -280,7 +392,7 @@ const validateCampaignEmails = async (req, res) => {
       });
     }
 
-    const remainingCredits = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+    const remainingCredits = userPlan ? Math.max(0, userPlan.totalCredits - userPlan.creditsUsed) : 0;
 
     res.json({
       success: true,
@@ -292,12 +404,14 @@ const validateCampaignEmails = async (req, res) => {
           verifiedCount,
           validCount,
           notValidCount,
+          cachedCount,
+          freshCount,
           creditCostPerEmail: validationCreditCost,
           creditsConsumed,
           remainingCredits
         }
       },
-      message: `Validated ${uniqueEmails.length} email${uniqueEmails.length !== 1 ? 's' : ''}`
+      message: `Validated ${uniqueEmails.length} email${uniqueEmails.length !== 1 ? 's' : ''} (${cachedCount} from cache, ${freshCount} newly checked)`
     });
   } catch (error) {
     console.error('Error validating campaign emails:', error);
@@ -334,7 +448,7 @@ const duplicateCampaign = async (req, res) => {
 
     const originalCampaign = await Campaign.findOne({
       _id: req.params.id,
-      userId
+      ...tenantFilter(req)
     });
 
     if (!originalCampaign) {
@@ -346,7 +460,7 @@ const duplicateCampaign = async (req, res) => {
 
     const emailTemplate = await EmailTemplate.findOne({
       _id: originalCampaign.emailTemplateId,
-      userId,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -361,6 +475,7 @@ const duplicateCampaign = async (req, res) => {
       name: newName,
       description: originalCampaign.description || '',
       userId,
+      ...tenantStamp(req),
       status: 'draft',
       emailTemplateId: originalCampaign.emailTemplateId,
       selectedLeads: originalCampaign.selectedLeads.map((lead) => ({
@@ -416,7 +531,7 @@ const updateCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId: req.user.id
+      ...tenantFilter(req)
     });
 
     if (!campaign) {
@@ -470,7 +585,7 @@ const deleteCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId: req.user.id
+      ...tenantFilter(req)
     });
 
     if (!campaign) {
@@ -516,7 +631,7 @@ const startCampaign = async (req, res) => {
 
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId
+      ...tenantFilter(req)
     }).populate('emailTemplateId');
 
     if (!campaign) {
@@ -533,6 +648,53 @@ const startCampaign = async (req, res) => {
       });
     }
 
+    // ── ICP gate ────────────────────────────────────────────────────────
+    // The customer must have signed off on who we contact on their behalf.
+    // An admin can override for a customer who has gone quiet, by passing
+    // { overrideIcp: true } — recorded on the campaign so it is not silent.
+    const icp = await CampaignICP.findOne({ campaignId: campaign._id });
+    const overrideIcp = req.body && req.body.overrideIcp === true;
+
+    if (!icp) {
+      if (!(req.user.isAdmin && overrideIcp)) {
+        return res.status(409).json({
+          success: false,
+          code: 'ICP_MISSING',
+          message: 'This campaign has no ICP yet. An ICP must be created and approved before sending.'
+        });
+      }
+    } else if (icp.status !== 'approved') {
+      // The response window may have closed since the last sweep ran. Treat a
+      // passed deadline as approved here too, so a campaign is never blocked by
+      // a deadline that has already expired — and record the auto-approval.
+      if (CampaignICP.isPastDeadline(icp)) {
+        icp.status = 'approved';
+        icp.approvedAt = new Date();
+        icp.approvalSource = 'auto';
+        icp.autoApproveAt = undefined;
+        await icp.save();
+      } else if (!(req.user.isAdmin && overrideIcp)) {
+        const hoursLeft = icp.hoursUntilAutoApprove;
+        return res.status(409).json({
+          success: false,
+          code: 'ICP_NOT_APPROVED',
+          icpStatus: icp.status,
+          hoursUntilAutoApprove: hoursLeft,
+          message: icp.status === 'revision_requested'
+            ? 'The customer has requested changes to this ICP. Revise it and send it back for approval before sending.'
+            : `This campaign's ICP is awaiting customer approval. It will approve automatically in ${hoursLeft ?? '—'} hour(s) if they do not respond.`
+        });
+      }
+    }
+
+    if (overrideIcp && req.user.isAdmin) {
+      campaign.addError(
+        'Admin override: campaign started without an approved ICP (status: ' + (icp ? icp.status : 'none') + ')',
+        null,
+        'other'
+      );
+    }
+
     // Count valid email leads
     const validLeads = campaign.selectedLeads.filter(
       (lead) => lead.email && lead.email.includes('@')
@@ -543,45 +705,58 @@ const startCampaign = async (req, res) => {
     const userPlans = await UserPlan.findActiveByUser(userId);
     const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
 
-    if (!userPlan) {
-      return res.status(402).json({
-        success: false,
-        message: 'No active plan found. Please subscribe to a plan to send campaigns.',
-        creditsRequired,
-        remainingCredits: 0
-      });
-    }
-
-    if (!userPlan.hasEnoughCredits(creditsRequired)) {
-      const remaining = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
-      return res.status(402).json({
-        success: false,
-        message: `Insufficient credits. You need ${creditsRequired} credits to send to ${validLeads.length} leads, but you only have ${remaining} credits remaining.`,
-        creditsRequired,
-        remainingCredits: remaining,
-        leadsCount: validLeads.length
-      });
-    }
-
-    // Reserve credits upfront in one write
-    userPlan.creditsUsed += creditsRequired;
-    await userPlan.save();
-
-    // Create a single consumption record for the reservation
-    await UserCreditConsumption.create({
-      userId,
-      userPlanId: userPlan._id,
-      actionType: 'SEND_CAMPAIGN_EMAIL',
-      creditsConsumed: creditsRequired,
-      leadId: `campaign_${campaign._id}`,
-      metadata: {
-        campaignId: campaign._id,
-        campaignName: campaign.name,
-        leadsCount: validLeads.length,
-        creditsPerEmail: campaign.creditsPerEmail || 1,
-        type: 'reserve'
+    // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
+    if (!BYPASS_PAYWALL) {
+      if (!userPlan) {
+        return res.status(402).json({
+          success: false,
+          message: 'No active plan found. Please subscribe to a plan to send campaigns.',
+          creditsRequired,
+          remainingCredits: 0
+        });
       }
-    });
+
+      if (!userPlan.hasEnoughCredits(creditsRequired)) {
+        const remaining = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+        return res.status(402).json({
+          success: false,
+          message: `Insufficient credits. You need ${creditsRequired} credits to send to ${validLeads.length} leads, but you only have ${remaining} credits remaining.`,
+          creditsRequired,
+          remainingCredits: remaining,
+          leadsCount: validLeads.length
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Reserve credits upfront in one write. Still done whenever a plan exists,
+    // so a funded account behaves identically to production — only the refusal
+    // above is skipped. With no plan at all there is nothing to deduct.
+    if (userPlan) {
+      userPlan.creditsUsed += creditsRequired;
+      await userPlan.save();
+    }
+
+    // Create a single consumption record for the reservation.
+    // Skipped when there is no plan to charge (only reachable while the
+    // paywall is parked) — the record is keyed to a plan, so without one
+    // there is nothing meaningful to write.
+    if (userPlan) {
+      await UserCreditConsumption.create({
+        userId,
+        userPlanId: userPlan._id,
+        actionType: 'SEND_CAMPAIGN_EMAIL',
+        creditsConsumed: creditsRequired,
+        leadId: `campaign_${campaign._id}`,
+        metadata: {
+          campaignId: campaign._id,
+          campaignName: campaign.name,
+          leadsCount: validLeads.length,
+          creditsPerEmail: campaign.creditsPerEmail || 1,
+          type: 'reserve'
+        }
+      });
+    }
 
     // Update campaign and start
     campaign.status = 'sending';
@@ -604,7 +779,9 @@ const startCampaign = async (req, res) => {
       }).catch(console.error);
     });
 
-    const remainingAfterReserve = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
+    const remainingAfterReserve = userPlan
+      ? Math.max(0, userPlan.totalCredits - userPlan.creditsUsed)
+      : 0;
 
     res.json({
       success: true,
@@ -630,7 +807,7 @@ const pauseCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId: req.user.id
+      ...tenantFilter(req)
     });
 
     if (!campaign) {
@@ -683,7 +860,7 @@ const getCampaignStats = async (req, res) => {
   try {
     const campaign = await Campaign.findOne({
       _id: req.params.id,
-      userId: req.user.id
+      ...tenantFilter(req)
     });
 
     if (!campaign) {
@@ -707,6 +884,14 @@ const getCampaignStats = async (req, res) => {
           performance: campaign.performance
         },
         emailStats,
+        // The follow-up rounds sent after the primary blast. The UI needs these
+        // to explain why more emails went out than there are contacts.
+        rounds: (campaign.rounds || []).map((r) => ({
+          type: r.type,
+          segment: r.segment,
+          sentCount: r.sentCount,
+          sentAt: r.sentAt
+        })),
         summary: {
           totalLeads: campaign.stats.totalLeads,
           completionRate: campaign.completionRate,
@@ -742,11 +927,11 @@ const getDashboardData = async (req, res) => {
       const overviewStats = await Campaign.getUserCampaignStats(userId);
 
       // Get recent campaigns
-      const recentCampaigns = await Campaign.findByUser(userId)
+      const recentCampaigns = await Campaign.findForTenant(tenantFilter(req))
         .limit(5);
 
       // Get active campaigns
-      const activeCampaigns = await Campaign.findByUser(userId, {
+      const activeCampaigns = await Campaign.findForTenant(tenantFilter(req), {
         status: { $in: ['sending', 'scheduled'] }
       });
 
@@ -815,6 +1000,180 @@ const getDashboardData = async (req, res) => {
   }
 };
 
+// @desc    Campaign results: segment counts + per-recipient list (who opened, etc.)
+// @route   GET /api/campaigns/:id/results?segment=all|opened|not-opened|clicked|bounced&page=&limit=
+// @access  Private
+const getCampaignResults = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const campaign = await Campaign.findOne({ _id: req.params.id, userId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    const campaignId = campaign._id;
+    const { segment = 'all', page = 1, limit = 25 } = req.query;
+
+    // Counts per raw status → roll up into buckets.
+    const statusCounts = await CampaignEmail.aggregate([
+      { $match: { campaignId } },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+    const byStatus = {};
+    statusCounts.forEach((s) => { byStatus[s._id] = s.count; });
+    const sumOf = (list) => list.reduce((n, s) => n + (byStatus[s] || 0), 0);
+
+    const segments = {
+      total: Object.values(byStatus).reduce((n, c) => n + c, 0),
+      delivered: sumOf(['delivered', 'opened', 'clicked', 'replied']),
+      opened: sumOf(SEGMENT_STATUSES.opened),
+      notOpened: sumOf(SEGMENT_STATUSES['not-opened']),
+      clicked: sumOf(SEGMENT_STATUSES.clicked),
+      bounced: sumOf(SEGMENT_STATUSES.bounced),
+      pending: sumOf(SEGMENT_STATUSES.pending),
+      replied: byStatus.replied || 0
+    };
+
+    // What the replies actually said. Counted from the classified intent so the
+    // page can report outcomes, not just "someone wrote back".
+    const intentCounts = await CampaignEmail.aggregate([
+      { $match: { campaignId, status: 'replied' } },
+      { $group: { _id: '$reply.intent', n: { $sum: 1 } } },
+    ]);
+    const byIntent = Object.fromEntries(intentCounts.map((r) => [r._id || 'other', r.n]));
+    const outcomes = {
+      meetingRequest: byIntent.meeting_request || 0,
+      interested:     byIntent.interested || 0,
+      question:       byIntent.question || 0,
+      notInterested:  byIntent.not_interested || 0,
+      unsubscribe:    byIntent.unsubscribe || 0,
+      outOfOffice:    byIntent.out_of_office || 0,
+      other:          byIntent.other || 0,
+      // Auto-replies are not human replies — excluded so the rate stays honest.
+      humanReplies:   intentCounts.reduce((n, r) => n + (r._id === 'out_of_office' ? 0 : r.n), 0),
+    };
+
+    // Recipient list (filtered by segment).
+    const filter = { campaignId };
+    if (segment !== 'all' && SEGMENT_STATUSES[segment]) {
+      filter.status = { $in: SEGMENT_STATUSES[segment] };
+    }
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const perPage = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
+
+    const [recipients, matchCount] = await Promise.all([
+      CampaignEmail.find(filter)
+        .select('leadEmail leadName leadCompany status emailType sentAt deliveredAt openedAt clickedAt')
+        .sort({ openedAt: -1, sentAt: -1 })
+        .skip((pageNum - 1) * perPage)
+        .limit(perPage)
+        .lean(),
+      CampaignEmail.countDocuments(filter)
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        campaign: { id: campaign._id, name: campaign.name, status: campaign.status, rounds: campaign.rounds || [] },
+        segments,
+        outcomes,
+        recipients,
+        pagination: { currentPage: pageNum, totalPages: Math.ceil(matchCount / perPage) || 1, totalCount: matchCount }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching campaign results:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch campaign results', error: error.message });
+  }
+};
+
+// @desc    Send a follow-up / reminder round to a segment of THIS campaign
+// @route   POST /api/campaigns/:id/follow-up   body: { segment, templateId }
+// @access  Private
+const sendCampaignFollowUp = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { segment, templateId } = req.body;
+
+    // 'all' is the final-call round — everyone who was sent the campaign,
+    // regardless of whether they opened it.
+    if (!['opened', 'not-opened', 'clicked', 'all'].includes(segment)) {
+      return res.status(400).json({ success: false, message: 'Segment must be opened, not-opened, clicked, or all' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: req.params.id, userId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    const template = await EmailTemplate.findOne({ _id: templateId, userId, isActive: true });
+    if (!template) {
+      return res.status(400).json({ success: false, message: 'Follow-up template not found or not accessible' });
+    }
+
+    // Recipients = primary-round emails in the chosen segment, minus anyone who
+    // already got a follow-up on this campaign.
+    // 'all' means every delivered/sent recipient of the primary round. The named
+    // segments use their status buckets.
+    const statusFilter = segment === 'all'
+      ? { $in: ['sent', 'delivered', 'opened', 'clicked', 'replied'] }
+      : { $in: SEGMENT_STATUSES[segment] };
+
+    const [segmentEmails, alreadyFollowed] = await Promise.all([
+      CampaignEmail.find({ campaignId: campaign._id, emailType: 'primary', status: statusFilter })
+        .select('leadId leadEmail leadName leadCompany').lean(),
+      CampaignEmail.find({ campaignId: campaign._id, emailType: 'follow-up', roundSegment: segment })
+        .select('leadEmail').lean()
+    ]);
+    // Only skip people who already got THIS round. A final call should still
+    // reach someone who received an earlier follow-up — otherwise the last step
+    // of the sequence would silently skip most of the list.
+    const followedSet = new Set(alreadyFollowed.map((r) => (r.leadEmail || '').toLowerCase()));
+    const recipients = segmentEmails.filter((r) => r.leadEmail && !followedSet.has(r.leadEmail.toLowerCase()));
+
+    if (recipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: segment === 'all'
+          ? 'Everyone on this campaign has already had the final call.'
+          : 'No new recipients in this segment to follow up.'
+      });
+    }
+
+    // Credit check (charged per email actually sent, inside the round).
+    const costPerEmail = campaign.creditsPerEmail || 1;
+    const creditsRequired = recipients.length * costPerEmail;
+    const userPlans = await UserPlan.findActiveByUser(userId);
+    const userPlan = userPlans && userPlans.length ? userPlans[0] : null;
+    // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
+    if (!BYPASS_PAYWALL && (!userPlan || !userPlan.hasEnoughCredits(creditsRequired))) {
+      const remaining = userPlan ? Math.max(0, userPlan.totalCredits - userPlan.creditsUsed) : 0;
+      return res.status(402).json({
+        success: false,
+        message: `Insufficient credits. You need up to ${creditsRequired} to send ${recipients.length} follow-ups, but you have ${remaining}.`,
+        creditsRequired,
+        remainingCredits: remaining
+      });
+    }
+
+    // Fire the round in the background (like start).
+    campaign.status = 'sending';
+    await campaign.save();
+
+    sendCampaignRound({ campaignId: campaign._id, recipients, template, emailType: 'follow-up', segment })
+      .catch((err) => console.error(`Follow-up round failed for ${campaign._id}:`, err.message));
+
+    res.status(202).json({
+      success: true,
+      message: `Follow-up queued to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}`,
+      data: { segment, recipientCount: recipients.length, templateId }
+    });
+  } catch (error) {
+    console.error('Error sending campaign follow-up:', error);
+    res.status(500).json({ success: false, message: 'Failed to send follow-up', error: error.message });
+  }
+};
+
 module.exports = {
   getCampaigns,
   getCampaign,
@@ -826,5 +1185,7 @@ module.exports = {
   startCampaign,
   pauseCampaign,
   getCampaignStats,
+  getCampaignResults,
+  sendCampaignFollowUp,
   getDashboardData
 };

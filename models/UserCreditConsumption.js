@@ -8,6 +8,17 @@ const userCreditConsumptionSchema = new mongoose.Schema(
       ref: 'User',
       required: [true, 'User ID is required']
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Which ORGANIZATION owns this record. userId above stays, but now means
+    // "who created it" rather than "who owns it" — queries scope on this.
+    //
+    // Optional for now so existing records stay readable during migration;
+    // tightened to required once every document is backfilled.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
 
     // User's active plan at the time of consumption
     userPlanId: {
@@ -164,6 +175,9 @@ userCreditConsumptionSchema.methods.getActionDescription = function() {
       return 'Unknown action';
   }
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userCreditConsumptionSchema.index({ organizationId: 1, createdAt: -1 });
 
 const UserCreditConsumption = mongoose.model('UserCreditConsumption', userCreditConsumptionSchema);
 

@@ -34,7 +34,14 @@ const callTranscriptSchema = new Schema({
   },
 
   // Flags
-  isMock:           { type: Boolean, default: false }, // true when any step used mock mode
+  // `isMock` is the combined flag the UI reads: true when EITHER step used mock
+  // mode. It used to be the only flag, which meant it could never be cleared —
+  // a transcript fetched before the API keys were configured stayed marked as
+  // mock forever, even after a real re-extraction. The two stage flags below
+  // record each step separately so the combined value can be recomputed.
+  isMock:           { type: Boolean, default: false },
+  meetIsMock:       { type: Boolean, default: undefined }, // Google Meet fetch used mock mode
+  extractIsMock:    { type: Boolean, default: undefined }, // Claude extraction used mock mode
   appliedToProfile: { type: Boolean, default: false },
   reviewedByAdmin:  { type: Boolean, default: false },
 
@@ -52,5 +59,17 @@ const callTranscriptSchema = new Schema({
 callTranscriptSchema.index({ scheduledCallId: 1 });
 callTranscriptSchema.index({ userId: 1 });
 callTranscriptSchema.index({ status: 1 });
+
+/**
+ * Was the Meet fetch mocked?
+ *
+ * Records written before meetIsMock existed don't carry the flag, so fall back
+ * to the evidence: mock mode returns conferenceRecordId null and no text, while
+ * a real fetch always sets a conferenceRecordId.
+ */
+callTranscriptSchema.statics.inferMeetIsMock = function (doc) {
+  if (typeof doc.meetIsMock === 'boolean') return doc.meetIsMock;
+  return !doc.conferenceRecordId;
+};
 
 module.exports = mongoose.model('CallTranscript', callTranscriptSchema);

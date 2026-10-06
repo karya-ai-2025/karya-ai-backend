@@ -69,7 +69,13 @@ const register = asyncHandler(async (req, res, next) => {
   // Create verification URL
   const verificationUrl = `${config.frontendUrl}/verify-email/${verificationToken}`;
 
-  // Send welcome/confirmation email on account creation
+  // NOTE: OTP verification is switched off. Registration no longer generates or
+  // emails a 6-digit code — the user goes straight into onboarding. The model
+  // methods (generateEmailOtp / verifyEmailOtp) and the /auth/verify-otp and
+  // /auth/resend-otp routes remain in place, unused, so this can be turned back
+  // on by restoring the generate + send here.
+
+  // Welcome email is a nicety; losing it must not block registration.
   try {
     await sendEmail({
       to: user.email,
@@ -87,7 +93,107 @@ const register = asyncHandler(async (req, res, next) => {
   ]);
 
   // Send response with token
-  sendTokenResponse(user, 201, res, 'Registration successful! Please check your email to verify your account.');
+  sendTokenResponse(user, 201, res, 'Registration successful! Welcome to Karya-AI.');
+});
+
+// ============================================
+// EMAIL OTP VERIFICATION
+// ============================================
+
+/**
+ * @desc    Verify an email with the 6-digit code sent at registration
+ * @route   POST /api/auth/verify-otp
+ * @access  Public
+ */
+const verifyEmailOtp = asyncHandler(async (req, res, next) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return next(new AppError('Email and verification code are required', 400));
+  }
+
+  // The OTP fields are select:false, so ask for them explicitly.
+  const user = await User.findOne({ email: String(email).toLowerCase().trim() })
+    .select('+emailOtpHash +emailOtpExpires +emailOtpAttempts +emailOtpLastSentAt');
+
+  // Deliberately the same message as a wrong code: telling someone "no such
+  // account" turns this endpoint into a way to discover who has registered.
+  if (!user) {
+    return next(new AppError('Invalid or expired verification code', 400));
+  }
+
+  if (user.isEmailVerified) {
+    return res.json({ success: true, message: 'Email is already verified', data: { alreadyVerified: true } });
+  }
+
+  const result = user.verifyEmailOtp(otp);
+  if (!result.ok) {
+    // Persist the incremented attempt count, or the limit means nothing.
+    await user.save({ validateBeforeSave: false });
+    return next(new AppError(result.reason, 400));
+  }
+
+  user.isEmailVerified = true;
+  user.clearEmailOtp();
+  // The emailed link is now redundant — retire it so neither route lingers.
+  user.emailVerificationToken = undefined;
+  user.emailVerificationExpires = undefined;
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Welcome to Karya-AI! 🎉',
+      html: templates.welcome(user.fullName)
+    });
+  } catch (error) {
+    console.error('Failed to send welcome email:', error);
+  }
+
+  res.json({ success: true, message: 'Email verified successfully', data: { verified: true } });
+});
+
+/**
+ * @desc    Send a fresh verification code
+ * @route   POST /api/auth/resend-otp
+ * @access  Public
+ */
+const resendEmailOtp = asyncHandler(async (req, res, next) => {
+  const { email } = req.body;
+  if (!email) return next(new AppError('Email is required', 400));
+
+  const user = await User.findOne({ email: String(email).toLowerCase().trim() })
+    .select('+emailOtpHash +emailOtpExpires +emailOtpAttempts +emailOtpLastSentAt');
+
+  // Always answer the same way, whether or not the account exists — otherwise
+  // this endpoint reveals which email addresses are registered.
+  const genericOk = () => res.json({
+    success: true,
+    message: 'If that account exists and is unverified, a new code is on its way.'
+  });
+
+  if (!user || user.isEmailVerified) return genericOk();
+
+  const wait = user.otpResendWaitSeconds();
+  if (wait > 0) {
+    return next(new AppError(`Please wait ${wait}s before requesting another code`, 429));
+  }
+
+  const otp = user.generateEmailOtp();
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: `${otp} is your Karya-AI verification code`,
+      html: templates.otp(user.fullName, otp)
+    });
+  } catch (error) {
+    console.error('Failed to resend OTP email:', error);
+    return next(new AppError('Could not send the verification code. Please try again.', 500));
+  }
+
+  genericOk();
 });
 
 // ============================================
@@ -682,6 +788,8 @@ module.exports = {
   resetPassword,
   changePassword,
   verifyEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
   resendVerification,
   updateProfile,
   checkEmail,

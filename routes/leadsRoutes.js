@@ -11,6 +11,7 @@ const UserCRM = require('../models/UserCRM'); // used to derive the delivered-le
 const { getUserLeads, getUserLeadsCount } = require('../controllers/userLeadsController');
 const { upload, importLeads } = require('../controllers/leadsImportController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { buildLeadWhere, getFilterOptions } = require('../services/leadFilters');
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -992,6 +993,24 @@ router.get('/filters/segments', async (req, res) => {
 });
 
 /**
+ * GET /api/leads/filters/options
+ * Distinct values for the "Additional filters" dropdowns, taken from the lead
+ * table itself — so the UI offers only values that actually exist, with a count
+ * beside each, rather than a hardcoded list that drifts from the data.
+ *
+ * Cached server-side for 10 minutes; these change only on a data re-import.
+ */
+router.get('/filters/options', protect, async (req, res) => {
+  try {
+    const data = await getFilterOptions({ force: req.query.force === 'true' });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Filter options error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load filter options' });
+  }
+});
+
+/**
  * GET /api/leads/filters/seniority
  * Returns all seniority levels from tbl_seniority (e.g. "decision maker", "c-suite")
  */
@@ -1142,6 +1161,20 @@ router.post('/generate', protect, [
   body('location').optional().isString(),
   body('segment').optional().isString(),
   body('seniority').optional().isString(),
+  // ── Additional filters ────────────────────────────────────────────────
+  // All optional. Absent or empty means "don't filter on this".
+  body('accountSegment').optional().isString(),
+  body('tShirtSize').optional().isString(),
+  body('gtmSector').optional().isString(),
+  body('gtmSubIndustry').optional().isString(),
+  body('city').optional().isString(),
+  body('state').optional().isString(),
+  body('zip').optional().isString(),
+  body('jobTitle').optional().isString(),
+  body('minEmployees').optional({ nullable: true, values: 'falsy' }).isInt({ min: 0 }),
+  body('maxEmployees').optional({ nullable: true, values: 'falsy' }).isInt({ min: 0 }),
+  body('hasEmail').optional().isBoolean(),
+  body('hasPhone').optional().isBoolean(),
   body('cursor').optional({ nullable: true }).isInt({ min: 0 }).withMessage('cursor must be a non-negative integer'),
   body('limit').optional({ nullable: true }).isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100'),
   handleValidationErrors
@@ -1154,36 +1187,14 @@ router.post('/generate', protect, [
 
     console.log('Generating leads:', { industry, company, companySegment, location, segment, seniority, cursor, limit, userId });
 
-    // ── Step 1: Resolve industry + all three mapping tables + delivered IDs in parallel ──
-    const [industryRecord, regionRow, segmentRow, seniorityRow, crmDocs] = await Promise.all([
-      prisma.tbl_gtm_industry.findFirst({
-        where: { industry_name: { contains: industry.replace(/-/g, ' '), mode: 'insensitive' } }
-      }),
-      location && location.trim()
-        ? prisma.$queryRawUnsafe(
-            `SELECT countries FROM tbl_regions WHERE region_name = LOWER($1)`,
-            location.trim()
-          )
-        : Promise.resolve([]),
-      segment && segment.trim()
-        ? prisma.$queryRawUnsafe(
-            `SELECT min_employees, max_employees FROM tbl_segments WHERE segment_name = LOWER($1)`,
-            segment.trim()
-          )
-        : Promise.resolve([]),
-      seniority && seniority.trim()
-        ? prisma.$queryRawUnsafe(
-            `SELECT title_keywords FROM tbl_seniority WHERE level_name = LOWER($1)`,
-            seniority.trim()
-          )
-        : Promise.resolve([]),
+    // ── Step 1: WHERE clause + delivered-lead exclusion ──────────────────────────
+    // The clause builder is shared with the admin on-behalf search, so both
+    // return the same leads for the same filters. It also accepts the extra
+    // "additional filters" (sector, sub-industry, city, state, size, …).
+    const [{ where: filterWhere, values: filterValues }, crmDocs] = await Promise.all([
+      buildLeadWhere(req.body),
       UserCRM.find({ userId }, { leadIds: 1, _id: 0 }).lean(),
     ]);
-
-    const industryName    = industryRecord ? industryRecord.industry_name : industry;
-    const regionCountries = regionRow[0]?.countries        || null;
-    const empRange        = segmentRow[0]                  || null;
-    const titleKeywords   = seniorityRow[0]?.title_keywords || null;
 
     const deliveredIds = [
       ...new Set(
@@ -1193,53 +1204,6 @@ router.post('/generate', protect, [
           .filter(n => Number.isInteger(n) && n > 0)
       )
     ];
-
-    // ── Step 2: Build parameterized WHERE clause ──────────────────────────────────
-    // ALL column names are hardcoded constants — never from user input.
-    const filterValues  = [];
-    const filterClauses = [];
-
-    filterClauses.push(`"GTM Industry" ILIKE '%' || $${filterValues.length + 1} || '%'`);
-    filterValues.push(industryName);
-
-    if (company && company.trim()) {
-      filterClauses.push(`"Account Name" ILIKE '%' || $${filterValues.length + 1} || '%'`);
-      filterValues.push(company.trim());
-    }
-
-    if (companySegment && companySegment.trim()) {
-      filterClauses.push(`"Account Sub Segment" = $${filterValues.length + 1}`);
-      filterValues.push(companySegment.trim());
-    }
-
-    if (location && location.trim()) {
-      if (regionCountries && regionCountries.length > 0) {
-        // Region expansion: "apac" → ISO-2 array; LOWER() handles "Us"/"US"/"us" quirks
-        filterClauses.push(`LOWER("Mailing Country") = ANY($${filterValues.length + 1}::text[])`);
-        filterValues.push(regionCountries); // already lowercase from tbl_regions seed
-      } else {
-        filterClauses.push(`"Mailing Country" ILIKE '%' || $${filterValues.length + 1} || '%'`);
-        filterValues.push(location.trim());
-      }
-    }
-
-    if (empRange) {
-      if (empRange.min_employees !== null && empRange.max_employees !== null) {
-        filterClauses.push(`employees BETWEEN $${filterValues.length + 1} AND $${filterValues.length + 2}`);
-        filterValues.push(empRange.min_employees, empRange.max_employees);
-      } else if (empRange.min_employees !== null) {
-        filterClauses.push(`employees >= $${filterValues.length + 1}`);
-        filterValues.push(empRange.min_employees);
-      }
-    }
-
-    if (titleKeywords && titleKeywords.length > 0) {
-      const patterns = titleKeywords.map(kw => `%${kw}%`);
-      filterClauses.push(`title ILIKE ANY($${filterValues.length + 1}::text[])`);
-      filterValues.push(patterns);
-    }
-
-    const filterWhere = filterClauses.join(' AND ');
 
     // ── Step 3: COUNT (no cursor, no exclusion) ───────────────────────────────────
     const countResult  = await prisma.$queryRawUnsafe(

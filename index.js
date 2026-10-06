@@ -44,6 +44,7 @@ const submissionRoutes = require('./routes/submissionRoutes'); // Project brief 
 // const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations — file not created yet
 
 const campaignRoutes = require('./routes/campaigns'); // Email campaigns
+const jobRoutes = require('./routes/jobRoutes'); // Job marketplace (acerstone)
 const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
 const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects
 const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
@@ -54,13 +55,18 @@ const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deli
 const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
 const adminRoutes       = require('./routes/adminRoutes');        // Admin analytics & management
+const infraRoutes       = require('./routes/infraRoutes');     // Admin infrastructure monitoring
+const adminCampaignRoutes = require('./routes/adminCampaignRoutes'); // Admin builds campaigns for customers
+const organizationRoutes = require('./routes/organizationRoutes'); // Org context & membership
 const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
 const contentProjectRoutes = require('./routes/contentProjectRoutes'); // Content Project (LinkedIn + Newsletter)
 const hitlRoutes = require('./routes/hitlRoutes'); // Human-in-the-loop approval requests
+const icpRoutes = require('./routes/icpRoutes'); // Campaign ICPs + customer approval loop
 const supportRoutes = require('./routes/supportRoutes'); // Support contact emails + update subscriptions
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
+const { startIcpAutoApproveJob, stopIcpAutoApproveJob } = require('./jobs/icpAutoApproveJob');
 const { startReminderJob,   stopReminderJob   } = require('./jobs/reminderJob');
 
 // Product analytics module (independent of Azure Application Insights)
@@ -211,7 +217,11 @@ app.use('/api/submissions', submissionRoutes); // Project brief submissions
 
 app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth) — must be before planRoutes
 app.use('/api/payments', paymentRoutes); // Payment gateway order creation and verification
-app.use('/api', planRoutes); // Plan and pricing management
+// planRoutes is mounted at bare '/api', so it sees EVERY /api request. It calls
+// router.use(protect) partway through, which means mounting it here applied auth
+// to every route declared below it — including the public analytics ingestion,
+// which 401d on every page view. It is already mounted further down, after the
+// specific routes, so this earlier duplicate is removed.
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
@@ -219,6 +229,7 @@ app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
 app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
+app.use('/api/icp', icpRoutes); // Campaign ICPs (customer view + admin authoring)
 app.use('/api/support', supportRoutes); // Support contact emails + update subscriptions
 app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
 
@@ -235,8 +246,12 @@ app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
 app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
+app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
+app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
+app.use('/api/organizations', organizationRoutes); // Which company am I in, and what may I do
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
+app.use('/api/jobs', jobRoutes); // Job marketplace (acerstone)
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
 app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
@@ -274,6 +289,7 @@ const startServer = async () => {
     
     // Start background jobs
     startTranscriptJob();
+    startIcpAutoApproveJob();
     startReminderJob();
 
     // Start Express server
@@ -330,6 +346,7 @@ const startServer = async () => {
     process.on('SIGTERM', () => {
       console.log('👋 SIGTERM received. Shutting down gracefully...');
       stopTranscriptJob();
+      stopIcpAutoApproveJob();
       server.close(() => {
         console.log('💤 Process terminated');
       });
