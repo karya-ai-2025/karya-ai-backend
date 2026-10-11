@@ -10,6 +10,7 @@ const {
   updateSkills,
   updateServices,
   updatePortfolio,
+  updateProfiling,
   getOnboardingStatus,
   skipStep,
   saveAllOnboardingData
@@ -27,6 +28,9 @@ router.use(protect);
 
 // Get current onboarding status and saved data
 router.get('/expert/status', getOnboardingStatus);
+
+// Profiling questions (industry, experience, qualifications, work history)
+router.put('/expert/profiling', updateProfiling);
 
 // Step 1: Profile Setup (avatar, headline, bio, etc.)
 router.put('/expert/profile-setup', updateProfileSetup);

@@ -35,7 +35,13 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      // Social-login accounts (LinkedIn/Google) have no password
+      required: [
+        function () {
+          return !this.socialLogins?.linkedin?.id && !this.socialLogins?.google?.id;
+        },
+        'Password is required'
+      ],
       minlength: [8, 'Password must be at least 8 characters'],
       select: false
     },
@@ -178,6 +184,17 @@ const userSchema = new mongoose.Schema(
       ref: 'Organization',
       default: null,
       index: true
+    },
+
+    // Demo access — a walkthrough account handed to investors/partners (see
+    // scripts/createDemoAccount.js). Signs in at /api/auth/demo-login with a
+    // login ID, never appears in the experts directory, and can't change its
+    // own credentials.
+    isDemo: { type: Boolean, default: false },
+    demo: {
+      loginId: { type: String, trim: true, lowercase: true },
+      label: { type: String, trim: true },   // who the access was issued to
+      expiresAt: { type: Date }              // optional; sign-in is refused after this
     }
   },
   {
@@ -206,7 +223,7 @@ userSchema.virtual('availableRoles').get(function () {
 
 // Pre-save middleware: Hash password
 userSchema.pre('save', async function () {
-  if (!this.isModified('password')) return;
+  if (!this.isModified('password') || !this.password) return;
 
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
@@ -218,6 +235,7 @@ userSchema.pre('save', async function () {
 
 // Method: Compare password
 userSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password || !candidatePassword) return false; // social-login account
   return await bcrypt.compare(candidatePassword, this.password);
 };
 

@@ -27,7 +27,7 @@ const { apiLimiter } = require('./middleware/rateLimiter');
 // Routes
 const authRoutes = require('./routes/authRoutes');
 const profileRoutes = require('./routes/profileRoutes');
-const onboardingRoutes = require('./routes/onboardingRoutes');
+const onboardingRoutes = require('./routes/onboardingRoutes'); // Business onboarding
 const expertOnboardingRoutes=require('./routes/Expertonboardingroutes')
 const marketplaceRoutes=require('./routes/Marketplaceroutes')
 // projectRoutes removed — Project collection replaced by ProjectCatalog
@@ -37,12 +37,6 @@ const planRoutes = require('./routes/planRoutes'); // Plan and pricing routes
 const creditRoutes = require('./routes/creditRoutes'); // Credit consumption routes
 const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
-// const campaignRoutes = require('./routes/campaigns'); // Email campaigns — file not created yet
-// const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates — file not created yet
-// const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects — file not created yet
-// const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks — file not created yet
-// const conversationRoutes = require('./routes/conversationRoutes'); // Agent conversations — file not created yet
-
 const campaignRoutes = require('./routes/campaigns'); // Email campaigns
 const jobRoutes = require('./routes/jobRoutes'); // Job marketplace (acerstone)
 const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
@@ -91,16 +85,15 @@ app.set('trust proxy', 1);
 app.use(helmet());
 
 // Origins allowed to call this API:
-//  - the configured frontend URL (FRONTEND_URL)
+//  - the configured frontend URL (FRONTEND_URL), the Karya and Acerstone sites and
+//    localhost:3000 (config.frontendOrigins)
 //  - any deployed origins listed in CORS_ORIGINS (comma-separated) — set this in
 //    production to your deployed frontend URL(s)
-//  - local dev + VS Code / dev-tunnel preview URLs
+//  - VS Code / dev-tunnel preview URLs
 const allowedOrigins = [
-  config.frontendUrl,
-  ...String(process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()),
-  'http://localhost:3000',
+  ...config.frontendOrigins,
   'https://localhost:3000',
-  'http://127.0.0.1:3000'
+  ...String(process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim())
 ].filter(Boolean);
 const isAllowedOrigin = (origin) => {
   if (!origin) return true; // non-browser / same-origin requests (curl, server-to-server)
@@ -114,7 +107,7 @@ const isAllowedOrigin = (origin) => {
 };
 
 // Private Network Access: a public HTTPS origin (dev tunnel) calling a loopback
-// address (localhost:5000) is blocked by Chrome unless we echo this on the preflight.
+// address (localhost:5001) is blocked by Chrome unless we echo this on the preflight.
 app.use((req, res, next) => {
   if (isAllowedOrigin(req.headers.origin)) {
     res.header('Access-Control-Allow-Private-Network', 'true');
@@ -141,7 +134,13 @@ app.use(mongoSanitize());
 // ============================================
 
 // Parse JSON bodies
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  // Cal.com signs the exact bytes it sent — keep them for the webhook's HMAC check
+  verify: (req, res, buf) => {
+    if (req.originalUrl.startsWith('/api/scheduling/calcom/webhook')) req.rawBody = buf;
+  }
+}));
 
 // Parse URL-encoded bodies
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
@@ -213,16 +212,10 @@ app.use('/api/marketplace',marketplaceRoutes)
 // /api/projects removed — Project collection replaced by ProjectCatalog
 app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
 app.use('/api/leads', leadsRoutes); // Lead generation and management
-app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers (must be before /api planRoutes)
+app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers
 app.use('/api/submissions', submissionRoutes); // Project brief submissions
-
-app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth) — must be before planRoutes
+app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
 app.use('/api/payments', paymentRoutes); // Payment gateway order creation and verification
-// planRoutes is mounted at bare '/api', so it sees EVERY /api request. It calls
-// router.use(protect) partway through, which means mounting it here applied auth
-// to every route declared below it — including the public analytics ingestion,
-// which 401d on every page view. It is already mounted further down, after the
-// specific routes, so this earlier duplicate is removed.
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates
@@ -233,34 +226,20 @@ app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
 app.use('/api/icp', icpRoutes); // Campaign ICPs (customer view + admin authoring)
 app.use('/api/support', supportRoutes); // Support contact emails + update subscriptions
 app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
-
-app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
-app.use('/api/resources',        resourceRoutes);        // Resource hub — must be before /api planRoutes
-app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter) — must be before /api planRoutes
-// Must be before /api planRoutes: that router applies `protect` to everything
-// that reaches it, which would block the public invitation lookup.
-app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations
-app.use('/api', planRoutes); // Plan and pricing management
-app.use('/api/credits', creditRoutes); // Credit consumption tracking
-// app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet
-// app.use('/api/email-templates', emailTemplateRoutes); // Email templates — file not created yet
-// app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists — file not created yet
-// app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events — file not created yet
-// app.use('/api/conversations', conversationRoutes); // Agent conversations — file not created yet
-app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
+app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations
+app.use('/api/resources',        resourceRoutes);        // Resource hub
+app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter)
+app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling (Cal.com)
+app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations (public invite lookup)
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
 app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
 app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
 app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
-app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/jobs', jobRoutes); // Job marketplace (acerstone)
-app.use('/api/email-templates', emailTemplateRoutes); // Email templates
-app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
-app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
-app.use('/api/conversations', conversationRoutes); // Agent conversation history
-app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling + Google Meet
-app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
+// Keep last: planRoutes is mounted on bare /api and applies `protect` to everything
+// after its public routes, so any router mounted below it would require a login.
+app.use('/api', planRoutes); // Plan and pricing management
 
 
 // Future routes (placeholders)
@@ -312,10 +291,12 @@ const startServer = async () => {
 ║                                                            ║
 ║   Available Endpoints:                                     ║
 ║   • Health Check: GET /api/health                          ║
-║   • Auth: /api/auth/*                                      ║
+║   • Auth: /api/auth/* (incl. /linkedin, /google)           ║
 ║   • Profiles: /api/profiles/*                              ║
 ║   • Onboarding: /api/onboarding/*                          ║
-║   • Projects: /api/projects/*                              ║
+║   • Expert Onboarding: /api/expert-onboarding/*            ║
+║   • Marketplace: /api/marketplace/*                        ║
+║   • Catalog: /api/catalog/*                                ║
 ║   • Industries: GET /api/industries (PostgreSQL)          ║
 ║   • Leads: /api/leads/* (Lead Generation)                  ║
 ║   • Plans: /api/plans/* (Pricing & Subscriptions)         ║

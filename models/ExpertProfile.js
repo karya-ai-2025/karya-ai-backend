@@ -84,6 +84,33 @@ const expertProfileSchema = new mongoose.Schema(
     }],
 
     // ============================================
+    // PROFILING (onboarding questions — used for client matching)
+    // Broad on purpose: sector → segment → sub-segment, with bands rather than
+    // exact numbers. `industries` above mirrors segments + subSegments so the
+    // existing directory filters keep working.
+    // ============================================
+    profiling: {
+      sector: { type: String, trim: true, default: 'TMEG' },
+      segments: [{ type: String, trim: true }],
+      subSegments: [{ type: String, trim: true }],
+      otherIndustry: { type: String, trim: true, maxlength: 120 },
+      functions: [{ type: String, trim: true }],
+      seniority: { type: String, trim: true },
+      currentTitle: { type: String, trim: true, maxlength: 120 },
+      currentCompany: { type: String, trim: true, maxlength: 120 },
+      experienceBand: { type: String, enum: ['0-2', '3-5', '6-10', '11-15', '16-20', '20+', ''], default: '' },
+      // Private: excluded from every query unless asked for with .select('+profiling.ageBand'),
+      // so it can't leak through the public profile or directory endpoints.
+      ageBand: { type: String, enum: ['under-25', '25-34', '35-44', '45-54', '55-64', '65+', 'undisclosed', ''], default: '', select: false },
+      highestQualification: { type: String, trim: true },
+      topics: [{ type: String, trim: true }],
+      engagementTypes: [{ type: String, trim: true }],
+      geographies: [{ type: String, trim: true }],
+      wantsCall: { type: Boolean, default: false },
+      completedAt: { type: Date }
+    },
+
+    // ============================================
     // SERVICES (Step 3)
     // ============================================
     services: [{
@@ -272,6 +299,7 @@ const expertProfileSchema = new mongoose.Schema(
       isSearchable: { type: Boolean, default: false },
       isVerified: { type: Boolean, default: false },
       isFeatured: { type: Boolean, default: false },
+      isDemo: { type: Boolean, default: false }, // demo walkthrough profile — never listed (see pre-save hook)
       joinedAsExpert: { type: Date, default: Date.now },
       lastActive: { type: Date, default: Date.now }
     },
@@ -356,9 +384,22 @@ expertProfileSchema.methods.addService = async function (service) {
 };
 
 // ============================================
+// HOOKS
+// ============================================
+
+// Demo profiles stay out of the directory no matter which flow saves them
+expertProfileSchema.pre('save', function () {
+  if (this.profileStatus?.isDemo) {
+    this.profileStatus.isPublic = false;
+    this.profileStatus.isSearchable = false;
+  }
+});
+
+// ============================================
 // INDEXES
 // ============================================
 expertProfileSchema.index({ primaryCategory: 1 });
+expertProfileSchema.index({ 'profiling.segments': 1, 'profiling.subSegments': 1 });
 expertProfileSchema.index({ 'skills.name': 1 });
 expertProfileSchema.index({ 'availability.status': 1 });
 expertProfileSchema.index({ 'ratings.overall': -1 });

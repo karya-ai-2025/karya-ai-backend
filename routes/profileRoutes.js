@@ -21,6 +21,13 @@ const {
   searchExperts
 } = require('../controllers/profileController');
 
+const {
+  startLinkedInImport,
+  completeLinkedInImport,
+  getLinkedInImport,
+  deleteLinkedInImport
+} = require('../controllers/linkedinImportController');
+
 // Middleware
 const { protect, optionalAuth } = require('../middleware/authMiddleware');
 const { requireCapability } = require('../middleware/orgContext');
@@ -65,6 +72,12 @@ router.put('/expert', protect, updateExpertProfile);
 
 // Update expert onboarding progress
 router.put('/expert/onboarding', protect, updateExpertOnboarding);
+
+// Import from LinkedIn (Member Data Portability API)
+router.get('/expert/linkedin-import', protect, getLinkedInImport);
+router.post('/expert/linkedin-import/start', protect, startLinkedInImport);
+router.post('/expert/linkedin-import/complete', protect, completeLinkedInImport);
+router.delete('/expert/linkedin-import', protect, deleteLinkedInImport);
 
 // Portfolio management
 router.post('/expert/portfolio', protect, addPortfolioItem);

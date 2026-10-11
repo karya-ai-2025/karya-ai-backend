@@ -230,11 +230,11 @@ const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) =>
 
   const meetSection = meetLink
     ? `<div style="text-align:center;">
-        <a href="${meetLink}" class="button">Join Google Meet</a>
+        <a href="${meetLink}" class="button">Join the call</a>
        </div>
        <p style="word-break:break-all;color:#8B5CF6;font-size:14px;text-align:center;">${meetLink}</p>`
     : `<p style="background:#f8f5ff;border-radius:12px;padding:16px;text-align:center;color:#555;">
-        The Google Meet link will be sent to you shortly once confirmed by our team.
+        The joining link will be sent to you shortly once confirmed by our team.
        </p>`;
 
   return baseTemplate(`
@@ -296,7 +296,7 @@ const meetingReminderTemplate = (name, dateTime, timezone, meetLink) => {
     </div>
     <p>Click below to join the call now:</p>
     <div style="text-align:center;">
-      <a href="${meetLink}" class="button">Join Google Meet Now</a>
+      <a href="${meetLink}" class="button">Join the call now</a>
     </div>
     <p style="word-break:break-all;color:#8B5CF6;font-size:14px;text-align:center;">${meetLink}</p>
     <p>See you in a few minutes!</p>

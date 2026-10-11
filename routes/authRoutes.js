@@ -8,6 +8,7 @@ const router = express.Router();
 const {
   register,
   login,
+  demoLogin,
   logout,
   getMe,
   switchRole,
@@ -24,9 +25,11 @@ const {
   deactivateAccount,
   getProfiles
 } = require('../controllers/authController');
+const socialAuth = require('../controllers/socialAuthController');
+const { linkedInImportCallback } = require('../controllers/linkedinImportController');
 
 // Middleware
-const { protect } = require('../middleware/authMiddleware');
+const { protect, blockDemo } = require('../middleware/authMiddleware');
 const validateRequest = require('../middleware/validateRequest');
 const {
   authLimiter,
@@ -68,6 +71,17 @@ router.post(
   validateRequest,
   login
 );
+
+// Demo (walkthrough) accounts sign in with a login ID instead of an email
+router.post('/demo-login', authLimiter, demoLogin);
+
+// Sign in with LinkedIn / Google (OpenID Connect) — browser redirects, not fetch calls
+router.get('/linkedin', authLimiter, socialAuth.linkedin.start);
+router.get('/linkedin/callback', authLimiter, socialAuth.linkedin.callback);
+// LinkedIn data import consent lands here (see linkedinImportController)
+router.get('/linkedin/import/callback', authLimiter, linkedInImportCallback);
+router.get('/google', authLimiter, socialAuth.google.start);
+router.get('/google/callback', authLimiter, socialAuth.google.callback);
 
 // Check if email exists
 router.post('/check-email', checkEmail);
@@ -137,12 +151,13 @@ router.get('/profiles', protect, getProfiles);
 router.post('/switch-role', protect, switchRole);
 
 // Create additional profile (owner/expert)
-router.post('/create-profile', protect, createProfile);
+router.post('/create-profile', protect, blockDemo, createProfile);
 
 // Update core profile
 router.put(
   '/update-profile',
   protect,
+  blockDemo,
   updateProfileValidation,
   validateRequest,
   updateProfile
@@ -152,12 +167,13 @@ router.put(
 router.put(
   '/change-password',
   protect,
+  blockDemo,
   changePasswordValidation,
   validateRequest,
   changePassword
 );
 
 // Deactivate account
-router.delete('/deactivate', protect, deactivateAccount);
+router.delete('/deactivate', protect, blockDemo, deactivateAccount);
 
 module.exports = router;
