@@ -399,7 +399,11 @@ expertProfileSchema.pre('save', function () {
 // INDEXES
 // ============================================
 expertProfileSchema.index({ primaryCategory: 1 });
-expertProfileSchema.index({ 'profiling.segments': 1, 'profiling.subSegments': 1 });
+// Two separate indexes, not one compound index: MongoDB cannot index two array
+// fields together ("cannot index parallel arrays"), and with a compound index
+// every insert of a profile fails — which broke expert signup.
+expertProfileSchema.index({ 'profiling.segments': 1 });
+expertProfileSchema.index({ 'profiling.subSegments': 1 });
 expertProfileSchema.index({ 'skills.name': 1 });
 expertProfileSchema.index({ 'availability.status': 1 });
 expertProfileSchema.index({ 'ratings.overall': -1 });
