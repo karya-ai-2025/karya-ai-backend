@@ -18,6 +18,7 @@
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
     "validate": "node utils/validateSetup.js",
+    "demo:create": "node scripts/createDemoAccount.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

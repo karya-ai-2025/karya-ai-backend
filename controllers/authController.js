@@ -101,7 +101,6 @@ const register = asyncHandler(async (req, res, next) => {
  */
 const login = asyncHandler(async (req, res, next) => {
   const { email, password, role } = req.body;
-  console.log(email, password, role);
 
   // Find user and verify credentials
   const user = await User.findByCredentials(email.toLowerCase(), password);
@@ -128,6 +127,43 @@ const login = asyncHandler(async (req, res, next) => {
 
   // Send response with token
   sendTokenResponse(user, 200, res, 'Login successful');
+});
+
+// ============================================
+// DEMO LOGIN
+// ============================================
+
+// Demo accounts are stored as ordinary users whose email is <loginId>@<this
+// domain> — a reserved TLD, so nothing we send can ever be delivered.
+const DEMO_EMAIL_DOMAIN = 'demo.acerstone.invalid';
+
+/**
+ * @desc    Sign in to a demo (walkthrough) account with a login ID + password
+ * @route   POST /api/auth/demo-login
+ * @access  Public
+ */
+const demoLogin = asyncHandler(async (req, res, next) => {
+  const loginId = String(req.body.loginId || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  const invalid = () => next(new AppError('Invalid demo ID or password', 401));
+
+  if (!/^[a-z0-9][a-z0-9-]{2,39}$/.test(loginId) || !password) return invalid();
+
+  let user;
+  try {
+    user = await User.findByCredentials(`${loginId}@${DEMO_EMAIL_DOMAIN}`, password);
+  } catch (err) {
+    // Same wording whether the ID or the password was wrong; lockouts keep their own message
+    return next(new AppError(/locked/i.test(err.message) ? err.message : 'Invalid demo ID or password', 401));
+  }
+
+  if (!user.isDemo) return invalid();
+  if (user.demo?.expiresAt && user.demo.expiresAt < new Date()) {
+    return next(new AppError('This demo access has expired. Please ask us for a new one.', 401));
+  }
+
+  await user.populate({ path: 'profiles.expert', select: 'headline primaryCategory availability ratings' });
+  sendTokenResponse(user, 200, res, 'Demo login successful');
 });
 
 // ============================================
@@ -672,8 +708,10 @@ const getProfiles = asyncHandler(async (req, res, next) => {
 });
 
 module.exports = {
+  DEMO_EMAIL_DOMAIN,
   register,
   login,
+  demoLogin,
   logout,
   getMe,
   switchRole,

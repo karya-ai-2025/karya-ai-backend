@@ -139,8 +139,20 @@ const requireOnboardingComplete = (req, res, next) => {
   next();
 };
 
+/**
+ * Demo accounts are shared walkthrough logins — keep them from changing their
+ * own credentials or anything else the next visitor would inherit.
+ */
+const blockDemo = (req, res, next) => {
+  if (req.user?.isDemo) {
+    return next(new AppError('This action is not available on a demo account.', 403));
+  }
+  next();
+};
+
 module.exports = {
   protect,
+  blockDemo,
   optionalAuth,
   restrictTo,
   requireEmailVerification,

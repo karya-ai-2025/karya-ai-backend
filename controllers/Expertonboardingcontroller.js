@@ -443,6 +443,133 @@ const updatePortfolio = asyncHandler(async (req, res, next) => {
 });
 
 // ============================================
+// PROFILING QUESTIONS
+// ============================================
+
+const EXPERIENCE_YEARS = { '0-2': 1, '3-5': 4, '6-10': 8, '11-15': 13, '16-20': 18, '20+': 22 };
+
+const cleanText = (value, max = 120) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+const cleanList = (value, maxItems = 30) =>
+  Array.isArray(value) ? [...new Set(value.map((v) => cleanText(v, 80)).filter(Boolean))].slice(0, maxItems) : null;
+const yearOf = (value) => {
+  const year = parseInt(value, 10);
+  return year >= 1950 && year <= new Date().getFullYear() + 10 ? year : undefined;
+};
+const yearToDate = (value) => (yearOf(value) ? new Date(Date.UTC(yearOf(value), 0, 1)) : undefined);
+
+/**
+ * @desc    Save the onboarding profiling answers. Every field is optional so the
+ *          wizard can save after each step; `complete: true` finishes onboarding.
+ * @route   PUT /api/expert-onboarding/expert/profiling
+ * @access  Private
+ */
+const updateProfiling = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.user._id);
+  if (!user) return next(new AppError('User not found', 404));
+  if (!user.hasExpertProfile || !user.profiles?.expert) {
+    return next(new AppError('Expert profile not found', 404));
+  }
+
+  const profile = await ExpertProfile.findById(user.profiles.expert).select('+profiling.ageBand');
+  if (!profile) return next(new AppError('Expert profile document not found', 404));
+
+  const body = req.body || {};
+  if (!profile.profiling) profile.profiling = {};
+  const p = profile.profiling;
+
+  for (const key of ['segments', 'subSegments', 'functions', 'topics', 'engagementTypes', 'geographies']) {
+    const list = cleanList(body[key]);
+    if (list) p[key] = list;
+  }
+  for (const key of ['otherIndustry', 'seniority', 'currentTitle', 'currentCompany', 'highestQualification']) {
+    if (typeof body[key] === 'string') p[key] = cleanText(body[key]);
+  }
+  if (typeof body.experienceBand === 'string') p.experienceBand = body.experienceBand;
+  if (typeof body.ageBand === 'string') p.ageBand = body.ageBand;
+  if (typeof body.wantsCall === 'boolean') p.wantsCall = body.wantsCall;
+
+  // Keep the fields the directory, search and matching already read in sync
+  if (body.segments || body.subSegments) {
+    profile.industries = [...new Set([...(p.segments || []), ...(p.subSegments || [])])];
+  }
+  if (EXPERIENCE_YEARS[p.experienceBand] !== undefined && typeof body.experienceBand === 'string') {
+    profile.yearsOfExperience = EXPERIENCE_YEARS[p.experienceBand];
+  }
+  if (typeof body.bio === 'string') profile.bio = cleanText(body.bio, 2500);
+  if (typeof body.headline === 'string' && body.headline.trim()) profile.headline = cleanText(body.headline);
+  else if (!profile.headline && p.currentTitle) {
+    profile.headline = cleanText([p.currentTitle, p.currentCompany].filter(Boolean).join(' at '));
+  }
+  if (body.topics && !profile.skills?.length) {
+    profile.skills = p.topics.map((name) => ({ name, level: 'Advanced' }));
+  }
+  if (body.location && typeof body.location === 'object') {
+    if (!profile.location) profile.location = {};
+    profile.location.city = cleanText(body.location.city, 80);
+    if (cleanText(body.location.country, 80)) profile.location.country = cleanText(body.location.country, 80);
+  }
+
+  if (Array.isArray(body.education)) {
+    profile.education = body.education.slice(0, 10)
+      .map((e) => ({
+        institution: cleanText(e?.institution),
+        degree: cleanText(e?.degree),
+        field: cleanText(e?.field),
+        yearFrom: yearOf(e?.yearFrom),
+        yearTo: yearOf(e?.yearTo)
+      }))
+      .filter((e) => e.institution || e.degree);
+  }
+  if (Array.isArray(body.experience)) {
+    profile.experience = body.experience.slice(0, 20)
+      .map((e) => ({
+        title: cleanText(e?.title),
+        company: cleanText(e?.company),
+        description: cleanText(e?.description, 500),
+        startDate: yearToDate(e?.yearFrom),
+        endDate: e?.isCurrent ? undefined : yearToDate(e?.yearTo),
+        isCurrent: !!e?.isCurrent
+      }))
+      .filter((e) => e.title || e.company);
+  }
+  if (Array.isArray(body.certifications)) {
+    profile.certifications = body.certifications.slice(0, 20)
+      .map((c) => ({ name: cleanText(typeof c === 'string' ? c : c?.name), issuer: cleanText(c?.issuer) }))
+      .filter((c) => c.name);
+  }
+
+  if (!user.onboarding) user.onboarding = {};
+  if (!user.onboarding.expert) user.onboarding.expert = { currentStep: 0, completed: false };
+
+  if (body.complete === true) {
+    p.completedAt = new Date();
+    if (!profile.profileStatus) profile.profileStatus = {};
+    profile.profileStatus.isPublic = true;
+    profile.profileStatus.isSearchable = true;
+    profile.profileStatus.lastActive = new Date();
+    user.onboarding.expert.currentStep = 4;
+    user.onboarding.expert.completed = true;
+  } else {
+    user.onboarding.expert.currentStep = Math.max(user.onboarding.expert.currentStep || 0, 1);
+  }
+
+  await profile.save();
+  await user.save({ validateBeforeSave: false });
+
+  res.status(200).json({
+    success: true,
+    message: 'Profile saved',
+    data: {
+      profiling: profile.profiling,
+      education: profile.education,
+      experience: profile.experience,
+      certifications: profile.certifications
+    },
+    onboarding: user.onboarding.expert
+  });
+});
+
+// ============================================
 // GET ONBOARDING STATUS
 // ============================================
 
@@ -462,7 +589,7 @@ const getOnboardingStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError('Expert profile not found', 404));
   }
   
-  const profile = await ExpertProfile.findById(user.profiles.expert);
+  const profile = await ExpertProfile.findById(user.profiles.expert).select('+profiling.ageBand');
   
   if (!profile) {
     return next(new AppError('Expert profile document not found', 404));
@@ -492,7 +619,13 @@ const getOnboardingStatus = asyncHandler(async (req, res, next) => {
       
       // Step 4 data
       portfolio: profile.portfolio,
-      socialLinks: profile.socialLinks
+      socialLinks: profile.socialLinks,
+
+      // Profiling questions
+      profiling: profile.profiling,
+      education: profile.education,
+      experience: profile.experience,
+      certifications: profile.certifications
     }
   });
 });
@@ -537,7 +670,7 @@ const skipStep = asyncHandler(async (req, res, next) => {
 
     // Also set profile as public/searchable
     if (user.profiles?.expert) {
-      await ExpertProfile.findByIdAndUpdate(user.profiles.expert, {
+      await ExpertProfile.findOneAndUpdate({ _id: user.profiles.expert, 'profileStatus.isDemo': { $ne: true } }, {
         'profileStatus.isPublic': true,
         'profileStatus.isSearchable': true,
         'profileStatus.lastActive': new Date()
@@ -692,6 +825,7 @@ module.exports = {
   updateSkills,
   updateServices,
   updatePortfolio,
+  updateProfiling,
   getOnboardingStatus,
   skipStep,
   saveAllOnboardingData

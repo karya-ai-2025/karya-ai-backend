@@ -21,7 +21,7 @@ async function processCompletedCalls() {
       completedAt:       { $ne: null, $lt: cutoff }, // admin marked complete + 20min passed
       transcriptFetched: { $ne: true },
       fetchAttempts:     { $lt: MAX_ATTEMPTS },
-      meetLink:          { $ne: null },
+      meetLink:          /meet\.google\.com/, // transcripts only exist for Google Meet calls
     }).limit(10);
 
     if (!pendingCalls.length) return;
