@@ -12,6 +12,8 @@ const { getUserLeads, getUserLeadsCount } = require('../controllers/userLeadsCon
 const { upload, importLeads } = require('../controllers/leadsImportController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 const { buildLeadWhere, getFilterOptions } = require('../services/leadFilters');
+const { actorContextFor } = require('../middleware/orgContext');
+const { can } = require('../config/permissions');
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -165,8 +167,13 @@ router.post('/credits/consume', [
       leadPhone,
       leadName,
       leadCompany,
-      userId // Temporary - should come from req.user
+      userId: actorUserId // Temporary - should come from req.user
     } = req.body;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
 
     console.log(`Processing credit consumption: ${actionType} for user ${userId}`);
 
@@ -213,6 +220,8 @@ router.post('/credits/consume', [
     // Create consumption record
     const consumption = new UserCreditConsumption({
       userId: userId,
+      actorUserId,
+      ...(organizationId ? { organizationId } : {}),
       userPlanId: userPlan._id,
       actionType: actionType,
       creditsConsumed: creditCost,
@@ -268,7 +277,12 @@ router.get('/credits/history', [
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { userId } = req.query;
+    const { userId: actorUserId } = req.query;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId } = await actorContextFor(actorUserId);
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
@@ -311,7 +325,12 @@ router.get('/credits/history', [
  */
 router.get('/credits/balance/:userId', async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId: actorUserId } = req.params;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId } = await actorContextFor(actorUserId);
 
     console.log(`Fetching credit balance for user ${userId}`);
 
@@ -367,7 +386,20 @@ router.post('/credits/consume-enhanced', [
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, downloadFormat, leads, totalCost, userId } = req.body;
+    const { actionType, downloadFormat, leads, totalCost, userId: actorUserId } = req.body;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+
+    // Enterprise: taking leads out of the platform is for admins and managers.
+    if (membership && !can(membership, 'leads.export')) {
+      return res.status(403).json({
+        success: false,
+        message: `Your role (${membership.role}) does not allow exporting leads`
+      });
+    }
 
     console.log(`Processing enhanced credit consumption: ${leads.length} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
 
@@ -410,6 +442,8 @@ router.post('/credits/consume-enhanced', [
     // Create consumption records for each lead that consumed credits
     const consumptionRecords = leads.map(lead => ({
       userId: userId,
+      actorUserId,
+      ...(organizationId ? { organizationId } : {}),
       userPlanId: userPlan._id,
       actionType: actionType,
       creditsConsumed: lead.creditsForThisLead,
@@ -473,7 +507,20 @@ router.post('/credits/consume-batch', [
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, leads, totalCost, userId } = req.body;
+    const { actionType, leads, totalCost, userId: actorUserId } = req.body;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+
+    // Enterprise: taking leads out of the platform is for admins and managers.
+    if (membership && !can(membership, 'leads.export')) {
+      return res.status(403).json({
+        success: false,
+        message: `Your role (${membership.role}) does not allow exporting leads`
+      });
+    }
 
     console.log(`Processing batch credit consumption: ${leads.length} leads for user ${userId}, cost: ${totalCost}`);
 
@@ -516,6 +563,8 @@ router.post('/credits/consume-batch', [
     // Create consumption records for each lead
     const consumptionRecords = leads.map(lead => ({
       userId: userId,
+      actorUserId,
+      ...(organizationId ? { organizationId } : {}),
       userPlanId: userPlan._id,
       actionType: actionType,
       creditsConsumed: 1, // 1 credit per lead for download
@@ -576,7 +625,20 @@ router.post('/credits/consume-bulk', [
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, downloadFormat, downloadCount, totalCost, searchCriteria, userId } = req.body;
+    const { actionType, downloadFormat, downloadCount, totalCost, searchCriteria, userId: actorUserId } = req.body;
+
+    // The id sent is whoever is acting. Credits come from their account's
+    // pool — their own, or their organization's shared one — so from here on
+    // `userId` is that account and `actorUserId` is the person.
+    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+
+    // Enterprise: taking leads out of the platform is for admins and managers.
+    if (membership && !can(membership, 'leads.export')) {
+      return res.status(403).json({
+        success: false,
+        message: `Your role (${membership.role}) does not allow exporting leads`
+      });
+    }
 
     console.log(`Processing bulk credit consumption: ${downloadCount} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
 
@@ -619,6 +681,8 @@ router.post('/credits/consume-bulk', [
     // Create a single consumption record for bulk download
     const consumptionRecord = new UserCreditConsumption({
       userId: userId,
+      actorUserId,
+      ...(organizationId ? { organizationId } : {}),
       userPlanId: userPlan._id,
       actionType: actionType,
       creditsConsumed: totalCost,
@@ -680,6 +744,15 @@ router.post('/generate-for-download', [
   try {
     const { industry, company, companySegment, location, downloadCount, downloadFormat, userId } = req.body;
     console.log(`Generating ${downloadCount} leads for download: format=${downloadFormat}, user=${userId}`);
+
+    // Enterprise: taking leads out of the platform is for admins and managers.
+    const { membership } = await actorContextFor(userId);
+    if (membership && !can(membership, 'leads.export')) {
+      return res.status(403).json({
+        success: false,
+        message: `Your role (${membership.role}) does not allow exporting leads`
+      });
+    }
 
     // Build search filters (same as regular generate endpoint)
     const whereClause = {};
@@ -1193,7 +1266,9 @@ router.post('/generate', protect, [
     // "additional filters" (sector, sub-industry, city, state, size, …).
     const [{ where: filterWhere, values: filterValues }, crmDocs] = await Promise.all([
       buildLeadWhere(req.body),
-      UserCRM.find({ userId }, { leadIds: 1, _id: 0 }).lean(),
+      // Enterprise: exclude what anyone in the organization already holds, not
+      // just this member, so two colleagues are never sold the same lead.
+      UserCRM.find(req.organizationId ? { organizationId: req.organizationId } : { userId }, { leadIds: 1, _id: 0 }).lean(),
     ]);
 
     const deliveredIds = [

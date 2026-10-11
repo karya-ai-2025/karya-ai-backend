@@ -1,6 +1,9 @@
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const UserPlan = require('../models/UserPlan');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+// The account holding the plan and credits: the caller for an individual,
+// the organization's owning admin for an enterprise member (one shared pool).
+const { accountUserId } = require('../middleware/orgContext');
 
 /**
  * @desc Get user's credit consumption statistics
@@ -8,7 +11,7 @@ const { asyncHandler, AppError } = require('../middleware/errorHandler');
  * @access Private
  */
 const getCreditStats = asyncHandler(async (req, res, next) => {
-  const userId = req.user.id;
+  const userId = String(accountUserId(req));
 
   // Get user's active plan for total credits used
   const userPlan = await UserPlan.findOne({
@@ -84,7 +87,7 @@ const getCreditStats = asyncHandler(async (req, res, next) => {
  * @access Private
  */
 const getCreditHistory = asyncHandler(async (req, res, next) => {
-  const userId = req.user.id;
+  const userId = String(accountUserId(req));
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
 
@@ -125,7 +128,7 @@ const getCreditHistory = asyncHandler(async (req, res, next) => {
  * @access Private
  */
 const getCreditRecord = asyncHandler(async (req, res, next) => {
-  const userId = req.user.id;
+  const userId = String(accountUserId(req));
   const recordId = req.params.id;
 
   const record = await UserCreditConsumption.findOne({
@@ -151,7 +154,7 @@ const getCreditRecord = asyncHandler(async (req, res, next) => {
  * @access Private
  */
 const getCreditSummary = asyncHandler(async (req, res, next) => {
-  const userId = req.user.id;
+  const userId = String(accountUserId(req));
   const { period = '30' } = req.query; // days
 
   const days = parseInt(period);
@@ -210,7 +213,7 @@ const getCreditSummary = asyncHandler(async (req, res, next) => {
  * @access Private
  */
 const purchaseCredits = asyncHandler(async (req, res, next) => {
-  const userId = req.user._id;
+  const userId = accountUserId(req);
   const { credits, amount } = req.body;
 
   // Validate input

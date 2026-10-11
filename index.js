@@ -99,6 +99,7 @@ const allowedOrigins = [
   config.frontendUrl,
   ...String(process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()),
   'http://localhost:3000',
+  'https://localhost:3000',
   'http://127.0.0.1:3000'
 ].filter(Boolean);
 const isAllowedOrigin = (origin) => {
@@ -236,6 +237,9 @@ app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations (must be before /api planRoutes)
 app.use('/api/resources',        resourceRoutes);        // Resource hub — must be before /api planRoutes
 app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter) — must be before /api planRoutes
+// Must be before /api planRoutes: that router applies `protect` to everything
+// that reaches it, which would block the public invitation lookup.
+app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations
 app.use('/api', planRoutes); // Plan and pricing management
 app.use('/api/credits', creditRoutes); // Credit consumption tracking
 // app.use('/api/campaigns', campaignRoutes); // Email campaigns — file not created yet
@@ -249,7 +253,6 @@ app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics das
 app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
 app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
-app.use('/api/organizations', organizationRoutes); // Which company am I in, and what may I do
 app.use('/api/campaigns', campaignRoutes); // Email campaigns
 app.use('/api/jobs', jobRoutes); // Job marketplace (acerstone)
 app.use('/api/email-templates', emailTemplateRoutes); // Email templates

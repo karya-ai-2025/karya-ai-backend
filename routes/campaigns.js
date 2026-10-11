@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
-const { attachOrgContext } = require('../middleware/orgContext');
+const { requireCapability } = require('../middleware/orgContext');
 const {
   getCampaigns,
   getCampaign,
@@ -15,21 +15,16 @@ const {
   getCampaignStats,
   getCampaignResults,
   sendCampaignFollowUp,
-  getDashboardData
+  getDashboardData,
+  submitCampaignForApproval,
+  approveCampaign,
+  rejectCampaign
 } = require('../controllers/campaignController');
 
-// Apply authentication middleware to all routes
+// Apply authentication middleware to all routes. For an enterprise account
+// `protect` also resolves the organization and role; requireCapability below
+// holds members to that role and lets individual accounts straight through.
 router.use(protect);
-
-// Resolve which organization the caller is acting in, and verify they are a
-// member of it. Attaches req.membership / req.organizationId, which
-// tenantFilter() reads.
-//
-// Harmless while ORG_SCOPING is off: it resolves context but nothing uses it
-// to filter, so these routes behave exactly as before. It does NOT reject a
-// user who has no organization yet — requireOrg does that, and it is not
-// applied here until the migration has run.
-router.use(attachOrgContext);
 
 // Campaign CRUD routes
 router.route('/')
@@ -50,6 +45,7 @@ router.route('/:id')
 
 // Campaign action routes
 router.post('/:id/duplicate', duplicateCampaign); // POST /api/campaigns/:id/duplicate - Copy campaign as draft
+// Start checks the role itself: an employee may start their own campaign once approved.
 router.post('/:id/start', startCampaign);   // POST /api/campaigns/:id/start - Start campaign
 router.post('/:id/pause', pauseCampaign);   // POST /api/campaigns/:id/pause - Pause campaign
 
@@ -58,6 +54,11 @@ router.get('/:id/stats', getCampaignStats); // GET /api/campaigns/:id/stats - Ge
 
 // Campaign results (per-recipient: who opened) + follow-up/reminder to a segment
 router.get('/:id/results', getCampaignResults);      // GET  /api/campaigns/:id/results
-router.post('/:id/follow-up', sendCampaignFollowUp);  // POST /api/campaigns/:id/follow-up
+router.post('/:id/follow-up', requireCapability('campaign.start'), sendCampaignFollowUp);  // POST /api/campaigns/:id/follow-up
+
+// Approval loop (enterprise): employee submits, manager/admin decides
+router.post('/:id/submit', requireCapability('campaign.submitForApproval'), submitCampaignForApproval); // POST /api/campaigns/:id/submit
+router.post('/:id/approve', requireCapability('campaign.approve'), approveCampaign); // POST /api/campaigns/:id/approve
+router.post('/:id/reject', requireCapability('campaign.approve'), rejectCampaign);   // POST /api/campaigns/:id/reject
 
 module.exports = router;

@@ -23,6 +23,12 @@ const {
 
 // Middleware
 const { protect, optionalAuth } = require('../middleware/authMiddleware');
+const { requireCapability } = require('../middleware/orgContext');
+
+// In an enterprise the business profile is the company's, shared by every
+// member, so only those who manage the organization may change it.
+// Individual accounts pass straight through.
+const manageCompany = requireCapability('org.manage');
 
 // ============================================
 // PUBLIC ROUTES - Expert Search & View
@@ -42,10 +48,10 @@ router.get('/experts/:id', getPublicExpertProfile);
 router.get('/business', protect, getBusinessProfile);
 
 // Update business profile
-router.put('/business', protect, updateBusinessProfile);
+router.put('/business', protect, manageCompany, updateBusinessProfile);
 
 // Update business onboarding progress
-router.put('/business/onboarding', protect, updateBusinessOnboarding);
+router.put('/business/onboarding', protect, manageCompany, updateBusinessOnboarding);
 
 // ============================================
 // PROTECTED ROUTES - Expert Profile

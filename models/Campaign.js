@@ -24,11 +24,9 @@ const campaignSchema = new mongoose.Schema(
       index: true
     },
     // ── Tenant ───────────────────────────────────────────────────────────
-    // Which ORGANIZATION owns this record. userId above stays, but now means
-    // "who created it" rather than "who owns it" — queries scope on this.
-    //
-    // Optional for now so existing records stay readable during migration;
-    // tightened to required once every document is backfilled.
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',
@@ -78,6 +76,23 @@ const campaignSchema = new mongoose.Schema(
       },
       default: 'draft',
       index: true
+    },
+
+    // ── Approval (enterprise only) ───────────────────────────────────────
+    // An employee cannot start a campaign on their own; they submit it and a
+    // manager or admin signs it off. Stays 'none' for individual accounts and
+    // for campaigns built by someone who may start them directly.
+    approval: {
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      requestedAt: { type: Date },
+      decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      decidedAt: { type: Date },
+      note: { type: String, trim: true, maxlength: 500 }
     },
 
     // Email Template Reference
@@ -516,9 +531,9 @@ campaignSchema.statics.findByUser = function (userId, filters = {}) {
  * The same list, but scoped by an already-built tenant filter rather than a
  * bare userId.
  *
- * Callers pass tenantFilter(req), which is `{ userId }` while org scoping is
- * off and an organization-scoped filter once it is on — so this one static
- * serves both, and there is no moment where the list and the detail view
+ * Callers pass tenantFilter(req), which is `{ userId }` for an individual
+ * account and an organization-scoped filter for an enterprise member — so
+ * this one static serves both, and there is no moment where the list and the detail view
  * disagree about who owns what.
  */
 campaignSchema.statics.findForTenant = function (tenant = {}, filters = {}) {
@@ -540,9 +555,23 @@ campaignSchema.statics.getCampaignsByStatus = function (status) {
     .sort({ updatedAt: -1 });
 };
 
-campaignSchema.statics.getUserCampaignStats = async function (userId) {
+campaignSchema.statics.getUserCampaignStats = function (userId) {
+  return this.getTenantCampaignStats({ userId });
+};
+
+/**
+ * Overview totals for whatever tenantFilter(req) describes — one user's
+ * campaigns, or an organization's. Aggregations do not cast ids the way
+ * find() does, so the filter's ids are cast here.
+ */
+campaignSchema.statics.getTenantCampaignStats = async function (tenant = {}) {
+  const match = {};
+  ['userId', 'organizationId'].forEach((key) => {
+    if (tenant[key]) match[key] = new mongoose.Types.ObjectId(String(tenant[key]));
+  });
+
   const stats = await this.aggregate([
-    { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+    { $match: match },
     {
       $group: {
         _id: null,

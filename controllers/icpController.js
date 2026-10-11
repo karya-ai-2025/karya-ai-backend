@@ -13,6 +13,7 @@ const Campaign = require('../models/Campaign');
 // regardless of which routes happen to have loaded first.
 require('../models/EmailTemplate');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
+const { tenantFilter, hasCapability } = require('../middleware/orgContext');
 
 const FILTER_KEYS = ['industry', 'location', 'seniority', 'segment', 'companySegment', 'company'];
 
@@ -71,12 +72,11 @@ function withSequence(icp) {
 /**
  * GET /api/icp
  * Every ICP belonging to the signed-in customer, newest first.
- * Scoped by userId, so another customer's ICP can never be returned.
+ * Scoped by tenantFilter — the customer's own, or their organization's —
+ * so another customer's ICP can never be returned.
  */
 const listMyICPs = asyncHandler(async (req, res) => {
-  const userId = req.user._id;
-
-  const icps = await CampaignICP.find({ userId, status: { $ne: 'archived' } })
+  const icps = await CampaignICP.find({ ...tenantFilter(req), status: { $ne: 'archived' } })
     .populate({ path: 'campaignId', select: 'name status parentCampaignId isParent emailTemplateId', populate: { path: 'emailTemplateId', select: 'templateName subject emailBody' } })
     .sort({ updatedAt: -1 });
 
@@ -88,9 +88,7 @@ const listMyICPs = asyncHandler(async (req, res) => {
  * One ICP. 404 (not 403) when the campaign isn't theirs — don't confirm it exists.
  */
 const getICPForCampaign = asyncHandler(async (req, res, next) => {
-  const userId = req.user._id;
-
-  const campaign = await Campaign.findOne({ _id: req.params.campaignId, userId }).lean();
+  const campaign = await Campaign.findOne({ _id: req.params.campaignId, ...tenantFilter(req) }).lean();
   if (!campaign) return next(new AppError('Campaign not found', 404));
 
   const icp = await CampaignICP.findOne({ campaignId: campaign._id })
@@ -108,8 +106,13 @@ const getICPForCampaign = asyncHandler(async (req, res, next) => {
  *   { action: 'request_changes', note: '...' }   <- the suggestion box
  */
 const reviewICP = asyncHandler(async (req, res, next) => {
-  const userId = req.user._id;
   const { action, note = '' } = req.body;
+
+  // Enterprise: signing off who the company contacts is for admins and
+  // managers. Individual accounts review their own.
+  if (!hasCapability(req, 'icp.approve')) {
+    return next(new AppError(`Your role (${req.membership.role}) cannot review ICPs`, 403));
+  }
 
   if (!['approve', 'request_changes'].includes(action)) {
     return next(new AppError('action must be approve or request_changes', 400));
@@ -118,7 +121,7 @@ const reviewICP = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please describe what you would like changed', 400));
   }
 
-  const campaign = await Campaign.findOne({ _id: req.params.campaignId, userId }).lean();
+  const campaign = await Campaign.findOne({ _id: req.params.campaignId, ...tenantFilter(req) }).lean();
   if (!campaign) return next(new AppError('Campaign not found', 404));
 
   const icp = await CampaignICP.findOne({ campaignId: campaign._id });

@@ -10,13 +10,16 @@
  */
 
 const ProjectUser = require('../../models/ProjectUser');
+const { accountUserIdFor } = require('../../middleware/orgContext');
 
 const LEADS_SLUGS = ['hotlead-in-a-box', 'outbound-list-builder'];
 const EMAIL_SLUGS = ['hotlead-in-a-box', 'ai-email-sales-agency'];
 
 const ownsAnySlug = async (userId, slugs) => {
   if (!userId) return false;
-  const doc = await ProjectUser.findOne({ userId, projectSlug: { $in: slugs } })
+  // Enterprise members are entitled to whatever their organization owns.
+  const ownerId = await accountUserIdFor(userId);
+  const doc = await ProjectUser.findOne({ userId: ownerId, projectSlug: { $in: slugs } })
     .select('_id')
     .lean();
   return Boolean(doc);

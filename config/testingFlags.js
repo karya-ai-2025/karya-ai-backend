@@ -27,27 +27,6 @@
 
 const BYPASS_PAYWALL = process.env.BYPASS_PAYWALL !== 'false';
 
-// ── Organization scoping ────────────────────────────────────────────────
-//
-// OFF by default, and it must stay off until the migration has run.
-//
-// While off, every controller filters by userId exactly as it always has —
-// the organization code is present but dormant, so nothing changes for
-// anyone. New records still get stamped with organizationId when one is
-// known, so data created in the meantime is already correct.
-//
-// While on, queries filter by organizationId and a member's role decides
-// what they can see. Flipping this before every record is stamped would
-// make existing campaigns, templates and lead lists vanish from view.
-//
-// ── TO TURN ON, IN ORDER ─────────────────────────────────────────────────
-//   1. node scripts/migrateToOrganizations.js            (dry run)
-//   2. node scripts/migrateToOrganizations.js --apply
-//   3. node scripts/migrateToOrganizations.js --verify   (expect 0 missing)
-//   4. ORG_SCOPING=true in the environment, restart
-// ─────────────────────────────────────────────────────────────────────────
-const ORG_SCOPING = process.env.ORG_SCOPING === 'true';
-
 /**
  * Loud startup banner. A silently-disabled paywall is exactly the kind of
  * thing that survives into production unnoticed, so it announces itself.
@@ -67,4 +46,4 @@ function warnIfBypassing() {
   );
 }
 
-module.exports = { BYPASS_PAYWALL, ORG_SCOPING, warnIfBypassing };
+module.exports = { BYPASS_PAYWALL, warnIfBypassing };

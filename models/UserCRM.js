@@ -83,11 +83,9 @@ const userCrmSchema = new mongoose.Schema(
       index: true
     },
     // ── Tenant ───────────────────────────────────────────────────────────
-    // Which ORGANIZATION owns this record. userId above stays, but now means
-    // "who created it" rather than "who owns it" — queries scope on this.
-    //
-    // Optional for now so existing records stay readable during migration;
-    // tightened to required once every document is backfilled.
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',

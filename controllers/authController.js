@@ -5,10 +5,13 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const BusinessProfile = require('../models/BusinessProfile');
 const ExpertProfile = require('../models/ExpertProfile');
+const Organization = require('../models/Organization');
+const Membership = require('../models/Membership');
 const { config } = require('../config/config');
 const { sendTokenResponse, clearTokenCookie } = require('../utils/generateToken');
 const { sendEmail, templates } = require('../utils/sendEmail');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
+const { orgSummaryForUser, orgSummaryFromReq, hasCapability } = require('../middleware/orgContext');
 
 // ============================================
 // REGISTER
@@ -20,7 +23,23 @@ const { AppError, asyncHandler } = require('../middleware/errorHandler');
  * @access  Public
  */
 const register = asyncHandler(async (req, res, next) => {
-  const { fullName, email, password, role, company, phone } = req.body;
+  const { fullName, email, password, role, company, phone, inviteToken } = req.body;
+
+  // Joining a company through an emailed invitation is its own path: the
+  // account type, organization and role all come from the invite, never from
+  // what the browser sent.
+  if (inviteToken) {
+    return registerFromInvite(req, res, next);
+  }
+
+  // Individual or enterprise — asked once, at signup. Experts are always
+  // individual; only a business account can be an enterprise.
+  const accountType =
+    role !== 'expert' && req.body.accountType === 'enterprise' ? 'enterprise' : 'individual';
+
+  if (accountType === 'enterprise' && String(company || '').trim().length < 2) {
+    return next(new AppError('Company name is required for an enterprise account', 400));
+  }
 
   // Check if user already exists
   const existingUser = await User.findOne({ email: email.toLowerCase() });
@@ -62,6 +81,41 @@ const register = asyncHandler(async (req, res, next) => {
     user.hasOwnerProfile = true;
   }
 
+  // Enterprise: create the company and make this person its first admin.
+  // An individual account stops here and never touches the organization code.
+  if (accountType === 'enterprise') {
+    let organization;
+    try {
+      organization = await Organization.create({
+        name: String(company).trim(),
+        slug: await Organization.buildSlug(company),
+        ownerUserId: user._id,
+        createdBy: user._id,
+        billingEmail: user.email
+      });
+
+      await Membership.create({
+        organizationId: organization._id,
+        userId: user._id,
+        role: 'admin',
+        status: 'active',
+        acceptedAt: new Date()
+      });
+    } catch (error) {
+      // Half an enterprise is worse than none: an 'enterprise' user with no
+      // membership is locked out by `protect`. Undo everything so the email
+      // is free to try again.
+      console.error('Enterprise signup failed, rolling back:', error);
+      if (organization) await Organization.deleteOne({ _id: organization._id }).catch(() => {});
+      await BusinessProfile.deleteOne({ user: user._id }).catch(() => {});
+      await User.deleteOne({ _id: user._id }).catch(() => {});
+      return next(new AppError('Could not create your organization. Please try again.', 500));
+    }
+
+    user.accountType = 'enterprise';
+    user.organizationId = organization._id;
+  }
+
   // Generate email verification token
   const verificationToken = user.generateEmailVerificationToken();
   await user.save({ validateBeforeSave: false });
@@ -93,8 +147,91 @@ const register = asyncHandler(async (req, res, next) => {
   ]);
 
   // Send response with token
-  sendTokenResponse(user, 201, res, 'Registration successful! Welcome to Karya-AI.');
+  sendTokenResponse(user, 201, res, 'Registration successful! Welcome to Karya-AI.', {
+    organization: await orgSummaryForUser(user)
+  });
 });
+
+/**
+ * Register by accepting a team invitation.
+ *
+ * Reached from `register` when the body carries an inviteToken. The new
+ * account joins the inviting organization in the invited role and shares the
+ * company's existing business profile, so it skips company onboarding.
+ */
+const registerFromInvite = async (req, res, next) => {
+  const { fullName, email, password, phone, inviteToken } = req.body;
+
+  const invite = await Membership.findByInviteToken(inviteToken);
+  if (!invite) {
+    return next(new AppError('This invitation is invalid or has expired. Ask your administrator for a new one.', 400));
+  }
+
+  // The link was sent to one address; it only opens an account for that one.
+  if (String(email).toLowerCase() !== invite.inviteEmail) {
+    return next(new AppError('This invitation was sent to a different email address', 400));
+  }
+
+  const existingUser = await User.findOne({ email: invite.inviteEmail });
+  if (existingUser) {
+    return next(new AppError('An account with this email already exists', 400));
+  }
+
+  const organization = await Organization.findById(invite.organizationId);
+  if (!organization || organization.status !== 'active') {
+    return next(new AppError('This organization is no longer active', 400));
+  }
+
+  // Members work from the company's one business profile, held by the owner.
+  const owner = await User.findById(organization.ownerUserId).select('profiles');
+
+  const user = await User.create({
+    fullName,
+    email: invite.inviteEmail,
+    password,
+    phone,
+    activeRole: 'owner',
+    accountType: 'enterprise',
+    organizationId: organization._id,
+    hasOwnerProfile: !!(owner && owner.profiles && owner.profiles.owner),
+    profiles: { owner: (owner && owner.profiles && owner.profiles.owner) || null },
+    // Receiving the invitation link is proof they control this inbox.
+    isEmailVerified: true,
+    // The company is already set up; there is nothing for a member to onboard.
+    isOnboardingComplete: true,
+    onboarding: { owner: { completed: true } }
+  });
+
+  try {
+    invite.userId = user._id;
+    invite.status = 'active';
+    invite.acceptedAt = new Date();
+    invite.inviteEmail = null;
+    invite.inviteTokenHash = undefined;
+    invite.inviteExpires = undefined;
+    await invite.save();
+  } catch (error) {
+    console.error('Accepting invitation failed, rolling back:', error);
+    await User.deleteOne({ _id: user._id }).catch(() => {});
+    return next(new AppError('Could not accept the invitation. Please try again.', 500));
+  }
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Welcome to Karya-AI! Your account has been created 🎉',
+      html: templates.welcome(user.fullName)
+    });
+  } catch (error) {
+    console.error('Failed to send welcome email:', error);
+  }
+
+  await user.populate([{ path: 'profiles.owner', select: 'company' }]);
+
+  sendTokenResponse(user, 201, res, `Welcome to ${organization.name}!`, {
+    organization: await orgSummaryForUser(user)
+  });
+};
 
 // ============================================
 // EMAIL OTP VERIFICATION
@@ -207,10 +344,19 @@ const resendEmailOtp = asyncHandler(async (req, res, next) => {
  */
 const login = asyncHandler(async (req, res, next) => {
   const { email, password, role } = req.body;
-  console.log(email, password, role);
 
   // Find user and verify credentials
   const user = await User.findByCredentials(email.toLowerCase(), password);
+
+  // Enterprise accounts only work while their membership does. Say so here,
+  // rather than letting them in to find every page refusing them.
+  const organization = await orgSummaryForUser(user);
+  if (user.accountType === 'enterprise' && !organization) {
+    return next(new AppError(
+      'Your access to this organization has been removed. Please contact your administrator.',
+      403
+    ));
+  }
 
   // If specific role requested, check if user has that profile
   if (role) {
@@ -233,7 +379,7 @@ const login = asyncHandler(async (req, res, next) => {
   ]);
 
   // Send response with token
-  sendTokenResponse(user, 200, res, 'Login successful');
+  sendTokenResponse(user, 200, res, 'Login successful', { organization });
 });
 
 // ============================================
@@ -274,9 +420,13 @@ const getMe = asyncHandler(async (req, res, next) => {
     ? user.profiles.expert
     : user.profiles.owner;
 
+  // For an enterprise account: which company, which role, what it allows.
+  // Null for an individual account.
+  const organization = orgSummaryFromReq(req);
+
   res.status(200).json({
     success: true,
-    user,
+    user: { ...user.toJSON(), organization },
     activeProfile,
     activeRole: user.activeRole,
     availableRoles: user.availableRoles
@@ -321,7 +471,9 @@ const switchRole = asyncHandler(async (req, res, next) => {
   ]);
 
   // Generate new token with updated role
-  sendTokenResponse(user, 200, res, `Switched to ${role} profile`);
+  sendTokenResponse(user, 200, res, `Switched to ${role} profile`, {
+    organization: orgSummaryFromReq(req)
+  });
 });
 
 // ============================================
@@ -391,7 +543,7 @@ const createProfile = asyncHandler(async (req, res, next) => {
   res.status(201).json({
     success: true,
     message: `${profileType === 'owner' ? 'Business' : 'Expert'} profile created successfully`,
-    user
+    user: { ...user.toJSON(), organization: orgSummaryFromReq(req) }
   });
 });
 
@@ -490,7 +642,9 @@ const resetPassword = asyncHandler(async (req, res, next) => {
     console.error('Failed to send password change confirmation:', error);
   }
 
-  sendTokenResponse(user, 200, res, 'Password reset successful');
+  sendTokenResponse(user, 200, res, 'Password reset successful', {
+    organization: await orgSummaryForUser(user)
+  });
 });
 
 // ============================================
@@ -526,7 +680,9 @@ const changePassword = asyncHandler(async (req, res, next) => {
     console.error('Failed to send password change confirmation:', error);
   }
 
-  sendTokenResponse(user, 200, res, 'Password changed successfully');
+  sendTokenResponse(user, 200, res, 'Password changed successfully', {
+    organization: orgSummaryFromReq(req)
+  });
 });
 
 // ============================================
@@ -666,6 +822,12 @@ const updateProfile = asyncHandler(async (req, res, next) => {
     }
   });
 
+  // In an enterprise the company profile is shared by the whole team, so
+  // only those who manage the organization may change it.
+  if (Object.keys(businessUpdates).length > 0 && !hasCapability(req, 'org.manage')) {
+    return next(new AppError('Only an organization admin can change company details', 403));
+  }
+
   // Update User model if there are user updates
   let user;
   if (Object.keys(userUpdates).length > 0) {
@@ -696,7 +858,7 @@ const updateProfile = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Profile updated successfully',
-    user
+    user: { ...user.toJSON(), organization: orgSummaryFromReq(req) }
   });
 });
 

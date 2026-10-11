@@ -18,7 +18,7 @@ const SEGMENT_STATUSES = {
 };
 const { validateEmailBatch, getCachedValidations, validateAndCache, normalizeEmail } = require('../services/neverBounceService');
 const { BYPASS_PAYWALL } = require('../config/testingFlags');
-const { tenantFilter, tenantStamp } = require('../middleware/orgContext');
+const { tenantFilter, tenantStamp, accountUserId, hasCapability } = require('../middleware/orgContext');
 
 // Map a NeverBounce "result" to the small enum we store on saved leads.
 const toVerificationStatus = (result = {}) => {
@@ -30,7 +30,7 @@ const toVerificationStatus = (result = {}) => {
 // Write verification status back onto the user's saved leads (UserCRM), matched
 // by email, so saved-list cards show ✓/✗ without re-validating. Grouped by
 // status so it's a handful of updateMany calls, not one per lead.
-const persistVerificationToSavedLeads = async (userId, resultByEmail) => {
+const persistVerificationToSavedLeads = async (tenant, resultByEmail) => {
   try {
     const now = new Date();
     const byStatus = {};
@@ -41,7 +41,7 @@ const persistVerificationToSavedLeads = async (userId, resultByEmail) => {
     await Promise.all(
       Object.entries(byStatus).map(([status, emails]) =>
         UserCRM.updateMany(
-          { userId, 'leads.email': { $in: emails } },
+          { ...tenant, 'leads.email': { $in: emails } },
           { $set: { 'leads.$[el].verificationStatus': status, 'leads.$[el].verifiedAt': now } },
           { arrayFilters: [{ 'el.email': { $in: emails } }] }
         )
@@ -277,7 +277,7 @@ const validateCampaignEmails = async (req, res) => {
 
     // Always read the plan (for the remaining-credits display); only ENFORCE and
     // charge when there are genuinely new emails to validate.
-    const userPlans = await UserPlan.findActiveByUser(userId);
+    const userPlans = await UserPlan.findActiveByUser(accountUserId(req));
     const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
 
     // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
@@ -356,7 +356,7 @@ const validateCampaignEmails = async (req, res) => {
     });
 
     // Persist the status onto the user's saved leads so the cards show ✓/✗ later.
-    await persistVerificationToSavedLeads(userId, resultByEmail);
+    await persistVerificationToSavedLeads(tenantFilter(req), resultByEmail);
 
     const verifiedCount = Object.values(resultByEmail).filter((result) => result.isValidated).length;
     const validCount = Object.values(resultByEmail).filter((result) => result.isValid).length;
@@ -372,7 +372,9 @@ const validateCampaignEmails = async (req, res) => {
       await userPlan.save();
 
       await UserCreditConsumption.create({
-        userId,
+        userId: accountUserId(req),
+        actorUserId: userId,
+        ...tenantStamp(req),
         userPlanId: userPlan._id,
         actionType: 'VALIDATE_EMAIL',
         creditsConsumed,
@@ -561,6 +563,16 @@ const updateCampaign = async (req, res) => {
       }
     });
 
+    // What was approved is no longer what would be sent. Anyone who cannot
+    // approve campaigns themselves has to ask again.
+    if (
+      campaign.approval &&
+      ['pending', 'approved'].includes(campaign.approval.status) &&
+      !hasCapability(req, 'campaign.approve')
+    ) {
+      campaign.approval = { status: 'none' };
+    }
+
     await campaign.save();
 
     res.json({
@@ -593,6 +605,19 @@ const deleteCampaign = async (req, res) => {
         success: false,
         message: 'Campaign not found'
       });
+    }
+
+    // Enterprise: admins and managers delete any campaign; an employee may
+    // only discard their own draft, never something that has gone out.
+    if (!hasCapability(req, 'campaign.delete')) {
+      const ownDraft = campaign.status === 'draft' &&
+        String(campaign.userId) === String(req.user._id);
+      if (!ownDraft) {
+        return res.status(403).json({
+          success: false,
+          message: 'Your role only allows deleting your own draft campaigns'
+        });
+      }
     }
 
     // Check if campaign can be deleted
@@ -646,6 +671,24 @@ const startCampaign = async (req, res) => {
         success: false,
         message: 'Campaign cannot be started in current state'
       });
+    }
+
+    // ── Role gate (enterprise only) ─────────────────────────────────────
+    // Starting spends the organization's credits. Admins and managers may;
+    // an employee may only start their own campaign once it has been
+    // approved. Individual accounts are never held here.
+    if (!hasCapability(req, 'campaign.start')) {
+      const approved = campaign.approval && campaign.approval.status === 'approved';
+      const isCreator = String(campaign.userId) === String(userId);
+      if (!(approved && isCreator)) {
+        return res.status(403).json({
+          success: false,
+          code: 'APPROVAL_REQUIRED',
+          message: campaign.approval && campaign.approval.status === 'pending'
+            ? 'This campaign is waiting for a manager to approve it.'
+            : 'Submit this campaign for approval before it can be started.'
+        });
+      }
     }
 
     // ── ICP gate ────────────────────────────────────────────────────────
@@ -702,7 +745,7 @@ const startCampaign = async (req, res) => {
     const creditsRequired = validLeads.length * (campaign.creditsPerEmail || 1);
 
     // Find active plan and check credits
-    const userPlans = await UserPlan.findActiveByUser(userId);
+    const userPlans = await UserPlan.findActiveByUser(accountUserId(req));
     const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
 
     // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
@@ -743,7 +786,9 @@ const startCampaign = async (req, res) => {
     // there is nothing meaningful to write.
     if (userPlan) {
       await UserCreditConsumption.create({
-        userId,
+        userId: accountUserId(req),
+        actorUserId: userId,
+        ...tenantStamp(req),
         userPlanId: userPlan._id,
         actionType: 'SEND_CAMPAIGN_EMAIL',
         creditsConsumed: creditsRequired,
@@ -924,7 +969,7 @@ const getDashboardData = async (req, res) => {
     // Try to get campaign data - handle case where models don't exist yet
     try {
       // Get overview stats
-      const overviewStats = await Campaign.getUserCampaignStats(userId);
+      const overviewStats = await Campaign.getTenantCampaignStats(tenantFilter(req));
 
       // Get recent campaigns
       const recentCampaigns = await Campaign.findForTenant(tenantFilter(req))
@@ -1006,7 +1051,7 @@ const getDashboardData = async (req, res) => {
 const getCampaignResults = async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
-    const campaign = await Campaign.findOne({ _id: req.params.id, userId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, ...tenantFilter(req) });
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
@@ -1101,12 +1146,12 @@ const sendCampaignFollowUp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Segment must be opened, not-opened, clicked, or all' });
     }
 
-    const campaign = await Campaign.findOne({ _id: req.params.id, userId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, ...tenantFilter(req) });
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
-    const template = await EmailTemplate.findOne({ _id: templateId, userId, isActive: true });
+    const template = await EmailTemplate.findOne({ _id: templateId, ...tenantFilter(req), isActive: true });
     if (!template) {
       return res.status(400).json({ success: false, message: 'Follow-up template not found or not accessible' });
     }
@@ -1143,7 +1188,7 @@ const sendCampaignFollowUp = async (req, res) => {
     // Credit check (charged per email actually sent, inside the round).
     const costPerEmail = campaign.creditsPerEmail || 1;
     const creditsRequired = recipients.length * costPerEmail;
-    const userPlans = await UserPlan.findActiveByUser(userId);
+    const userPlans = await UserPlan.findActiveByUser(accountUserId(req));
     const userPlan = userPlans && userPlans.length ? userPlans[0] : null;
     // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
     if (!BYPASS_PAYWALL && (!userPlan || !userPlan.hasEnoughCredits(creditsRequired))) {
@@ -1174,6 +1219,78 @@ const sendCampaignFollowUp = async (req, res) => {
   }
 };
 
+// ============================================
+// APPROVAL (enterprise)
+// An employee builds a campaign and asks; a manager or admin signs it off.
+// Individual accounts never need these — they can start directly.
+// ============================================
+
+// @desc    Ask for a campaign to be approved
+// @route   POST /api/campaigns/:id/submit
+// @access  Private (campaign.submitForApproval)
+const submitCampaignForApproval = async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, ...tenantFilter(req) });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+    if (!campaign.canBeStarted()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only a draft, scheduled or paused campaign can be submitted for approval'
+      });
+    }
+    if (campaign.approval && campaign.approval.status === 'pending') {
+      return res.status(400).json({ success: false, message: 'This campaign is already waiting for approval' });
+    }
+
+    campaign.approval = {
+      status: 'pending',
+      requestedBy: req.user._id,
+      requestedAt: new Date()
+    };
+    await campaign.save();
+
+    res.json({ success: true, data: campaign, message: 'Campaign submitted for approval' });
+  } catch (error) {
+    console.error('Error submitting campaign for approval:', error);
+    res.status(500).json({ success: false, message: 'Failed to submit campaign for approval', error: error.message });
+  }
+};
+
+// Shared by approve and reject — the two differ only in the outcome recorded.
+const decideCampaignApproval = (outcome) => async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, ...tenantFilter(req) });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+    if (!campaign.approval || campaign.approval.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'This campaign is not waiting for approval' });
+    }
+
+    campaign.approval.status = outcome;
+    campaign.approval.decidedBy = req.user._id;
+    campaign.approval.decidedAt = new Date();
+    campaign.approval.note = String((req.body && req.body.note) || '').trim().slice(0, 500);
+    await campaign.save();
+
+    res.json({
+      success: true,
+      data: campaign,
+      message: outcome === 'approved' ? 'Campaign approved' : 'Campaign sent back for changes'
+    });
+  } catch (error) {
+    console.error('Error deciding campaign approval:', error);
+    res.status(500).json({ success: false, message: 'Failed to update campaign approval', error: error.message });
+  }
+};
+
+// @route   POST /api/campaigns/:id/approve   (campaign.approve)
+const approveCampaign = decideCampaignApproval('approved');
+// @route   POST /api/campaigns/:id/reject    (campaign.approve)
+const rejectCampaign = decideCampaignApproval('rejected');
+
 module.exports = {
   getCampaigns,
   getCampaign,
@@ -1187,5 +1304,8 @@ module.exports = {
   getCampaignStats,
   getCampaignResults,
   sendCampaignFollowUp,
-  getDashboardData
+  getDashboardData,
+  submitCampaignForApproval,
+  approveCampaign,
+  rejectCampaign
 };

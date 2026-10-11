@@ -1,21 +1,25 @@
 // models/Membership.js
 //
-// One row = one person's place in one company.
+// One row = one person's place in one enterprise organization.
 //
-// This is the join table that makes everything else work. A User has as many
-// memberships as they have companies, which is why there is no organizationId
-// on User: an expert hired by three clients is one account with three rows.
+// Only enterprise accounts have one. An individual account has no membership
+// and no organization, and nothing here is consulted for it.
 //
 // An invite is a membership too — created with an email and no userId, then
 // bound to the account when it is accepted. That way a pending invite is
 // visible in the same list as everyone else rather than living somewhere
 // separate and getting out of step.
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 
-const ROLES = ['owner', 'admin', 'member', 'contractor'];
-const SCOPES = ['all', 'team', 'own'];
+const ROLES = ['admin', 'manager', 'employee'];
 const STATUSES = ['invited', 'active', 'suspended'];
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+const hashToken = (token) =>
+  crypto.createHash('sha256').update(String(token)).digest('hex');
 
 const membershipSchema = new mongoose.Schema(
   {
@@ -26,12 +30,11 @@ const membershipSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Null while an invite is outstanding — the person may have no account yet.
+    // Null while an invite is outstanding — the person has no account yet.
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       default: null,
-      index: true,
     },
 
     // Who was invited, when userId is not yet known.
@@ -42,36 +45,16 @@ const membershipSchema = new mongoose.Schema(
       default: null,
     },
 
+    // The emailed link carries the plain token; only its hash is stored, so a
+    // leaked database row cannot be used to join someone's company.
+    inviteTokenHash: { type: String, select: false, index: true },
+    inviteExpires: { type: Date },
+
     role: {
       type: String,
-      enum: { values: ROLES, message: 'Role must be owner, admin, member or contractor' },
+      enum: { values: ROLES, message: 'Role must be admin, manager or employee' },
       required: true,
-      default: 'member',
-      index: true,
-    },
-
-    // Whose records this person can see, within whatever their role allows.
-    // 'own' is the safe default for a member; a manager gets 'team' or 'all'.
-    // This is what avoids needing a full org chart to answer "can my manager
-    // see my campaigns?".
-    scope: {
-      type: String,
-      enum: SCOPES,
-      default: 'own',
-    },
-
-    // ── Contractors ─────────────────────────────────────────────────────
-    // A hired expert is scoped to named campaigns rather than the whole org.
-    // Empty for everyone else, and meaningless unless role === 'contractor'.
-    campaignIds: [{
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Campaign',
-    }],
-
-    // Contractors are time-boxed. Null means open-ended.
-    expiresAt: {
-      type: Date,
-      default: null,
+      default: 'employee',
       index: true,
     },
 
@@ -100,11 +83,17 @@ const membershipSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// One membership per person per org. Partial, because an outstanding invite
-// has no userId and several nulls would otherwise collide.
+// One account belongs to one organization. Partial, because an outstanding
+// invite has no userId and several nulls would otherwise collide.
+// Named explicitly so it cannot collide with a plain `userId_1` index left in
+// a database by an earlier version of this model.
 membershipSchema.index(
-  { organizationId: 1, userId: 1 },
-  { unique: true, partialFilterExpression: { userId: { $type: 'objectId' } } }
+  { userId: 1 },
+  {
+    name: 'one_org_per_user',
+    unique: true,
+    partialFilterExpression: { userId: { $type: 'objectId' } },
+  }
 );
 
 // One outstanding invite per email per org, for the same reason.
@@ -113,31 +102,33 @@ membershipSchema.index(
   { unique: true, partialFilterExpression: { inviteEmail: { $type: 'string' } } }
 );
 
-membershipSchema.index({ userId: 1, status: 1 });
-
 /**
- * A contractor past their end date is no longer active, whether or not a
- * sweep has run. Checked at request time so expiry does not depend on a job.
+ * Issue a fresh invite token. Returns the plain token for the email link;
+ * only the hash is kept.
  */
-membershipSchema.methods.isCurrentlyActive = function () {
-  if (this.status !== 'active') return false;
-  if (this.expiresAt && this.expiresAt.getTime() <= Date.now()) return false;
-  return true;
+membershipSchema.methods.generateInviteToken = function () {
+  const token = crypto.randomBytes(32).toString('hex');
+  this.inviteTokenHash = hashToken(token);
+  this.inviteExpires = new Date(Date.now() + INVITE_TTL_MS);
+  return token;
 };
 
-/** Every active membership for a user, newest first. */
-membershipSchema.statics.forUser = function (userId) {
-  return this.find({ userId, status: 'active' })
-    .populate('organizationId', 'name slug isPersonal status')
-    .sort({ createdAt: 1 });
+/** The outstanding, unexpired invite a token belongs to, or null. */
+membershipSchema.statics.findByInviteToken = function (token) {
+  if (!token) return Promise.resolve(null);
+  return this.findOne({
+    inviteTokenHash: hashToken(token),
+    status: 'invited',
+    inviteExpires: { $gt: new Date() },
+  });
 };
 
-/** The membership binding one user to one org, or null. */
-membershipSchema.statics.forUserInOrg = function (userId, organizationId) {
-  return this.findOne({ userId, organizationId, status: 'active' });
+/** The active membership for a user, or null. */
+membershipSchema.statics.activeForUser = function (userId) {
+  return this.findOne({ userId, status: 'active' });
 };
 
 membershipSchema.statics.ROLES = ROLES;
-membershipSchema.statics.SCOPES = SCOPES;
+membershipSchema.statics.INVITE_TTL_MS = INVITE_TTL_MS;
 
 module.exports = mongoose.model('Membership', membershipSchema);

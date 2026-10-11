@@ -1,6 +1,6 @@
 // config/permissions.js
 //
-// What each role inside an organization may do.
+// What each role inside an enterprise organization may do.
 //
 // Checks ask for a CAPABILITY, never a role:
 //
@@ -8,11 +8,14 @@
 //     membership.role === 'admin'              ✗
 //
 // The second form looks shorter until a fourth role appears — then every
-// scattered role check has to be found and edited. The same lesson as
-// tabAccessFor: one place decides, everything else reads it.
+// scattered role check has to be found and edited. One place decides,
+// everything else reads it.
 //
-// Platform admins (User.isAdmin) are NOT in this table. They are staff, not
-// members of anyone's company, and are handled separately by restrictTo.
+// Two kinds of account are NOT in this table:
+//   • Individual accounts have no membership at all. They own their data
+//     outright, so requireCapability lets them straight through.
+//   • Platform admins (User.isAdmin) are staff, not members of anyone's
+//     company, and are handled separately by restrictTo.
 
 // ── The vocabulary ──────────────────────────────────────────────────────────
 const CAPABILITIES = [
@@ -38,38 +41,35 @@ const CAPABILITIES = [
   'templates.view',
   'templates.manage',
 
-  // Money
+  // Money — one plan and one credit pool for the whole organization
   'billing.view',
-  'billing.manage',          // buy credits, change plan
+  'billing.manage',          // buy projects and credits, change plan
 
   // People
   'members.view',
   'members.invite',
-  'members.manage',          // change roles, suspend
-  'contractors.manage',      // hire/remove experts
+  'members.manage',          // change roles, suspend, remove
 
   // The org itself
   'org.view',
-  'org.manage',              // rename, domains, settings
-  'org.delete',
+  'org.manage',              // rename, company profile, settings
 ];
 
 const ALL = new Set(CAPABILITIES);
 
 // ── Role → capabilities ─────────────────────────────────────────────────────
 //
-// Read this table top to bottom; each role is a superset of the one below it,
-// except contractor, which is deliberately a different shape rather than a
-// smaller member.
+// Read top to bottom; each role is a superset of the one below it.
 
-const OWNER = [...CAPABILITIES];
+const ADMIN = [...CAPABILITIES];
 
-const ADMIN = CAPABILITIES.filter((c) => ![
-  'billing.manage',   // only an Owner spends the company's money on the plan
-  'org.delete',
+const MANAGER = CAPABILITIES.filter((c) => ![
+  'billing.manage',   // only an Admin spends the company's money
+  'members.manage',   // a manager can bring people in, not change or remove them
+  'org.manage',
 ].includes(c));
 
-const MEMBER = [
+const EMPLOYEE = [
   'campaign.view',
   'campaign.create',
   'campaign.edit',
@@ -79,35 +79,29 @@ const MEMBER = [
   'leads.search',
   'templates.view',
   'templates.manage',
+  'billing.view',
   'members.view',
   'org.view',
-  // Deliberately absent: campaign.start, campaign.approve, icp.approve,
-  // leads.export, billing.*. A member must not be able to spend the
-  // company's credits or walk out with the lead list.
-];
-
-const CONTRACTOR = [
-  'campaign.view',        // only their assigned campaigns — enforced by scope
-  'campaign.edit',
-  'campaign.submitForApproval',
-  'icp.view',
-  'templates.view',
-  'templates.manage',
-  'org.view',
-  // Deliberately absent: everything to do with leads, money and people.
-  // A hired expert may work for a competitor next month.
+  // Deliberately absent: campaign.start, campaign.approve, campaign.delete,
+  // icp.approve, leads.export, billing.manage. An employee must not be able
+  // to spend the company's credits unreviewed or walk out with the lead list.
 ];
 
 const ROLE_CAPABILITIES = {
-  owner: new Set(OWNER),
   admin: new Set(ADMIN),
-  member: new Set(MEMBER),
-  contractor: new Set(CONTRACTOR),
+  manager: new Set(MANAGER),
+  employee: new Set(EMPLOYEE),
 };
 
-// Contractors never see the raw lead list by default. An Owner can grant it
-// per membership later; until then this stays off.
-const GRANTABLE_TO_CONTRACTOR = new Set(['leads.view', 'leads.search']);
+const ROLES = Object.keys(ROLE_CAPABILITIES);
+
+// Which roles someone may hand out. A manager can only bring in employees —
+// otherwise inviting a second admin would be a way around every limit above.
+const INVITABLE_ROLES = {
+  admin: ['admin', 'manager', 'employee'],
+  manager: ['employee'],
+  employee: [],
+};
 
 /**
  * Does this membership allow this capability?
@@ -119,25 +113,17 @@ function can(membership, capability) {
   if (!membership || !capability) return false;
   if (!ALL.has(capability)) return false;              // typo — deny, don't guess
 
-  // An expired or suspended membership grants nothing, whatever the role says.
+  // A suspended or still-pending membership grants nothing, whatever the role says.
   if (membership.status && membership.status !== 'active') return false;
-  if (membership.expiresAt && new Date(membership.expiresAt).getTime() <= Date.now()) return false;
 
   const base = ROLE_CAPABILITIES[membership.role];
-  if (!base) return false;
-  if (base.has(capability)) return true;
-
-  // Per-membership grants, currently only meaningful for contractors.
-  const extra = Array.isArray(membership.extraCapabilities) ? membership.extraCapabilities : [];
-  if (extra.includes(capability) && GRANTABLE_TO_CONTRACTOR.has(capability)) return true;
-
-  return false;
+  return !!base && base.has(capability);
 }
 
 /**
  * The flat list the frontend renders from.
  *
- * Sent once per org context so the UI can hide what it must, while every
+ * Sent with the org context so the UI can hide what it must, while every
  * route still checks independently — a hidden button is UX, not security.
  */
 function capabilitiesFor(membership) {
@@ -148,33 +134,26 @@ function capabilitiesFor(membership) {
 /**
  * How much of the org this membership can see.
  *
- *   all  → every record in the org
- *   team → their own plus their team's (until teams exist, same as own)
- *   own  → only what they created
- *
- * Contractors are always narrowed to their assigned campaigns regardless.
+ *   all → every record in the org   (admin, manager)
+ *   own → only what they created    (employee)
  */
 function visibilityFor(membership) {
   if (!membership) return { mode: 'none' };
+  return { mode: membership.role === 'employee' ? 'own' : 'all' };
+}
 
-  if (membership.role === 'contractor') {
-    return {
-      mode: 'campaigns',
-      campaignIds: (membership.campaignIds || []).map(String),
-    };
-  }
-
-  if (membership.role === 'owner' || membership.role === 'admin') {
-    return { mode: 'all' };
-  }
-
-  return { mode: membership.scope === 'all' ? 'all' : membership.scope === 'team' ? 'team' : 'own' };
+/** May someone holding `actorRole` invite or assign `targetRole`? */
+function canAssignRole(actorRole, targetRole) {
+  return (INVITABLE_ROLES[actorRole] || []).includes(targetRole);
 }
 
 module.exports = {
   CAPABILITIES,
+  ROLES,
   ROLE_CAPABILITIES,
+  INVITABLE_ROLES,
   can,
   capabilitiesFor,
   visibilityFor,
+  canAssignRole,
 };

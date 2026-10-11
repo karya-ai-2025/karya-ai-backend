@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const { config } = require('../config/config');
 const User = require('../models/User');
 const { AppError, asyncHandler } = require('./errorHandler');
+const { resolveOrgContext } = require('./orgContext');
 
 /**
  * Protect routes - Verify JWT token
@@ -60,12 +61,17 @@ const protect = asyncHandler(async (req, res, next) => {
     
     // Attach user to request
     req.user = user;
-    next();
   } catch (error) {
     return next(
       new AppError('Invalid token. Please log in again.', 401)
     );
   }
+
+  // Enterprise accounts: work out which organization they act in and what
+  // their role allows. A no-op for individual accounts. Outside the try above
+  // so a withdrawn membership surfaces as its own 403, not "invalid token".
+  await resolveOrgContext(req);
+  next();
 });
 
 /**
@@ -90,9 +96,12 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
       
       if (user && user.isActive && !user.changedPasswordAfter(decoded.iat)) {
         req.user = user;
+        await resolveOrgContext(req);
       }
     } catch (error) {
-      // Token invalid, but that's okay for optional auth
+      // Token invalid, or an enterprise member whose access was withdrawn —
+      // either way they are treated as signed out for optional auth.
+      req.user = undefined;
     }
   }
   

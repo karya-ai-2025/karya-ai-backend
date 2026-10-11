@@ -1,34 +1,47 @@
 // routes/organizationRoutes.js
 //
-// Organization context for the signed-in user.
+// Enterprise organizations: the company, its members and its invitations.
 //
-// This first slice is read-only plus a preference change. It does not alter
-// how any existing endpoint behaves — it only lets the frontend find out
-// which companies someone belongs to and what they may do, so navigation can
-// be rendered correctly before the rest is wired up.
+// Apart from the public invitation lookup, everything here requires an
+// enterprise account (requireOrg) and then a capability for the specific
+// action. The organization is always the caller's own — there is no
+// organization id in any of these paths.
 
 const express = require('express');
 const router = express.Router();
 
 const { protect } = require('../middleware/authMiddleware');
-const { attachOrgContext, requireOrg, requireCapability } = require('../middleware/orgContext');
+const { requireOrg, requireCapability } = require('../middleware/orgContext');
+const { inviteLimiter } = require('../middleware/rateLimiter');
 const {
-  getMyOrganizations,
-  switchOrganization,
+  getMyOrganization,
+  updateMyOrganization,
   listMembers,
-  getCurrentOrganization,
+  inviteMember,
+  resendInvite,
+  revokeInvite,
+  updateMemberRole,
+  suspendMember,
+  reactivateMember,
+  lookupInvite,
 } = require('../controllers/organizationController');
 
-router.use(protect, attachOrgContext);
+// Public: the accept-invite page reads this before the person has an account.
+router.get('/invites/lookup/:token', lookupInvite);
 
-// Works even with no org yet — reports hasNoOrganization instead of failing,
-// so a brand-new or not-yet-migrated account gets a usable answer.
-router.get('/me', getMyOrganizations);
+router.use(protect, requireOrg);
 
-router.post('/switch', switchOrganization);
+router.get('/me', getMyOrganization);
+router.patch('/me', requireCapability('org.manage'), updateMyOrganization);
 
-// From here on an org must be resolved.
-router.get('/current', requireOrg, getCurrentOrganization);
-router.get('/:id/members', requireOrg, requireCapability('members.view'), listMembers);
+router.get('/members', requireCapability('members.view'), listMembers);
+router.patch('/members/:id', requireCapability('members.manage'), updateMemberRole);
+router.post('/members/:id/suspend', requireCapability('members.manage'), suspendMember);
+router.post('/members/:id/reactivate', requireCapability('members.manage'), reactivateMember);
+
+// Invitations send email, so they are rate limited.
+router.post('/invites', requireCapability('members.invite'), inviteLimiter, inviteMember);
+router.post('/invites/:id/resend', requireCapability('members.invite'), inviteLimiter, resendInvite);
+router.delete('/invites/:id', requireCapability('members.invite'), revokeInvite);
 
 module.exports = router;

@@ -2,6 +2,7 @@ const Campaign = require('../models/Campaign');
 const CampaignEmail = require('../models/CampaignEmail');
 const EmailTemplate = require('../models/EmailTemplate');
 const UserPlan = require('../models/UserPlan');
+const { accountUserIdFor } = require('../middleware/orgContext');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const { sendEmail } = require('./mailgunService');
 const { downloadAttachmentBuffer, uploadAttachmentBuffer } = require('./blobStorageService');
@@ -55,7 +56,10 @@ const refundUnusedCredits = async (campaignId) => {
 
   if (refundAmount <= 0) return;
 
-  const userPlans = await UserPlan.findActiveByUser(campaign.userId);
+  // Refund the pool the reservation came from: the creator's own plan, or
+  // their organization's shared one.
+  const accountId = await accountUserIdFor(campaign.userId);
+  const userPlans = await UserPlan.findActiveByUser(accountId);
   const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
   if (!userPlan) return;
 
@@ -63,7 +67,9 @@ const refundUnusedCredits = async (campaignId) => {
   await userPlan.save();
 
   await UserCreditConsumption.create({
-    userId: campaign.userId,
+    userId: accountId,
+    actorUserId: campaign.userId,
+    ...(campaign.organizationId ? { organizationId: campaign.organizationId } : {}),
     userPlanId: userPlan._id,
     actionType: 'SEND_CAMPAIGN_EMAIL',
     creditsConsumed: refundAmount,
@@ -399,14 +405,17 @@ const sendCampaignRound = async ({ campaignId, recipients = [], template, emailT
   // Charge only for follow-up emails actually sent.
   if (sentCount > 0) {
     try {
-      const plans = await UserPlan.findActiveByUser(campaign.userId);
+      const accountId = await accountUserIdFor(campaign.userId);
+      const plans = await UserPlan.findActiveByUser(accountId);
       const plan = plans && plans.length ? plans[0] : null;
       if (plan) {
         const consumed = sentCount * costPerEmail;
         plan.creditsUsed += consumed;
         await plan.save();
         await UserCreditConsumption.create({
-          userId: campaign.userId,
+          userId: accountId,
+          actorUserId: campaign.userId,
+          ...(campaign.organizationId ? { organizationId: campaign.organizationId } : {}),
           userPlanId: plan._id,
           actionType: 'SEND_CAMPAIGN_EMAIL',
           creditsConsumed: consumed,

@@ -1,14 +1,20 @@
 // middleware/orgContext.js
 //
-// Works out which organization the caller is acting in, and whether they are
-// actually a member of it.
+// Decides, per request, whether the caller is acting alone or as part of an
+// enterprise organization — and everything that follows from that.
 //
-// This is the boundary that keeps one company's data away from another's.
-// The org id arrives from the browser, so it is a claim, not a fact — it is
-// only believed after a matching active Membership is found. Nothing
-// downstream should ever read an org id straight off the request.
+//   individual account → no organization. Data is owned and filtered by
+//                        userId, exactly as it always has been.
+//   enterprise account → one organization. Data is filtered by
+//                        organizationId, and the member's role decides what
+//                        they may see and do.
 //
-// Runs after `protect`, which puts the authenticated user on req.user.
+// The organization is never taken from the browser. It is read from the
+// caller's own active Membership, so there is no id a client could swap to
+// reach another company's records.
+//
+// `protect` calls resolveOrgContext on every authenticated request, so the
+// context is already on req by the time any route runs.
 
 const mongoose = require('mongoose');
 const Membership = require('../models/Membership');
@@ -16,96 +22,68 @@ const Organization = require('../models/Organization');
 const User = require('../models/User');
 const { AppError } = require('./errorHandler');
 const { can, capabilitiesFor, visibilityFor } = require('../config/permissions');
-const { ORG_SCOPING } = require('../config/testingFlags');
-
-const HEADER = 'x-organization-id';
-
-/** The org the caller is asking to act in, if they named one. */
-function requestedOrgId(req) {
-  const raw =
-    req.headers[HEADER] ||
-    req.query.organizationId ||
-    (req.body && req.body.organizationId) ||
-    null;
-  return raw && mongoose.Types.ObjectId.isValid(String(raw)) ? String(raw) : null;
-}
 
 /**
- * Resolve org context onto the request.
+ * Resolve org context onto the request. Called by `protect`.
  *
- * Sets req.organizationId, req.membership and req.orgCapabilities when the
- * caller is a member. Does NOT reject on its own — `requireOrg` does that —
- * so routes that work with or without an org can use this alone.
+ * For an individual account this is a no-op costing no queries. For an
+ * enterprise account it sets:
+ *
+ *   req.membership       the caller's active Membership
+ *   req.organization     { _id, name, slug, ownerUserId }
+ *   req.organizationId   string
+ *   req.orgCapabilities  flat capability list
+ *   req.orgVisibility    { mode: 'all' | 'own' }
+ *
+ * Throws 403 when an enterprise account has no usable membership — a
+ * suspended member must lose access everywhere, not fall back to behaving
+ * like an individual with an empty workspace.
  */
-const attachOrgContext = async (req, res, next) => {
-  try {
-    if (!req.user) return next();
+async function resolveOrgContext(req) {
+  const user = req.user;
+  if (!user || user.accountType !== 'enterprise') return;
 
-    const userId = req.user._id || req.user.id;
-    const asked = requestedOrgId(req);
-
-    // Named an org → must be a member of that one. No falling back to another
-    // org on a miss: silently serving different data than was asked for is
-    // how the wrong company's records end up on screen.
-    let membership = null;
-    if (asked) {
-      membership = await Membership.forUserInOrg(userId, asked);
-      if (!membership || !membership.isCurrentlyActive()) {
-        return next(new AppError('You are not a member of this organization', 403));
-      }
-    } else {
-      // Nothing named → their last active org, else their first.
-      const user = req.user.lastActiveOrgId
-        ? req.user
-        : await User.findById(userId).select('lastActiveOrgId').lean();
-
-      if (user && user.lastActiveOrgId) {
-        membership = await Membership.forUserInOrg(userId, user.lastActiveOrgId);
-      }
-      if (!membership || !membership.isCurrentlyActive()) {
-        const all = await Membership.forUser(userId);
-        membership = all.find((m) => m.isCurrentlyActive()) || null;
-      }
-    }
-
-    if (!membership) return next();
-
-    req.membership = membership;
-    req.organizationId = String(membership.organizationId._id || membership.organizationId);
-    req.orgCapabilities = capabilitiesFor(membership);
-    req.orgVisibility = visibilityFor(membership);
-
-    return next();
-  } catch (err) {
-    return next(err);
+  const membership = await Membership.activeForUser(user._id);
+  if (!membership) {
+    throw new AppError(
+      'Your access to this organization has been removed. Please contact your administrator.',
+      403
+    );
   }
-};
 
-/** Require that org context resolved — use on anything org-scoped. */
+  const organization = await Organization.findById(membership.organizationId)
+    .select('name slug status ownerUserId')
+    .lean();
+  if (!organization || organization.status !== 'active') {
+    throw new AppError('This organization is not active. Please contact support.', 403);
+  }
+
+  req.membership = membership;
+  req.organization = organization;
+  req.organizationId = String(organization._id);
+  req.orgCapabilities = capabilitiesFor(membership);
+  req.orgVisibility = visibilityFor(membership);
+}
+
+/** Require an enterprise context — use on the organization's own routes. */
 const requireOrg = (req, res, next) => {
   if (!req.membership || !req.organizationId) {
-    return next(new AppError(
-      'No organization selected. Pass one in the X-Organization-Id header.',
-      400
-    ));
+    return next(new AppError('This is only available to enterprise accounts', 403));
   }
   return next();
 };
 
 /**
- * Require a capability within the current org.
+ * Require a capability.
  *
- *     router.post('/:id/start', requireOrg, requireCapability('campaign.start'), start)
+ *     router.post('/:id/start', requireCapability('campaign.start'), start)
  *
- * A platform admin is not a member of the org, so they do not pass this —
- * admin routes live under /api/admin and use restrictTo('admin') instead.
- * Keeping the two separate is deliberate: staff access should be visible as
- * staff access, not disguised as membership.
+ * An individual account has no membership and passes: it owns its data
+ * outright, and there is nobody else whose limits could apply. Only enterprise
+ * members are held to their role.
  */
 const requireCapability = (capability) => (req, res, next) => {
-  if (!req.membership) {
-    return next(new AppError('No organization selected', 400));
-  }
+  if (!req.membership) return next();
   if (!can(req.membership, capability)) {
     return next(new AppError(
       `Your role (${req.membership.role}) does not allow this action`,
@@ -115,56 +93,23 @@ const requireCapability = (capability) => (req, res, next) => {
   return next();
 };
 
-/**
- * The filter every org-scoped query should start from.
- *
- * Always pins organizationId, then narrows further by what this member may
- * see. Built here rather than hand-written per controller, because the
- * dangerous bug in a multi-tenant system is the one query that forgets the
- * org — and thirty hand-written filters is thirty chances to forget.
- *
- * @param {object} req
- * @param {string} [ownerField]  field holding the creating user, for 'own' scope
- */
-function orgScope(req, ownerField = 'userId') {
-  if (!req.organizationId) {
-    throw new AppError('orgScope called without organization context', 500);
-  }
-
-  const filter = { organizationId: req.organizationId };
-  const vis = req.orgVisibility || { mode: 'own' };
-
-  if (vis.mode === 'all') return filter;
-
-  if (vis.mode === 'campaigns') {
-    // A contractor sees only the campaigns they were hired onto. An empty
-    // list means nothing, not everything.
-    //
-    // Carried under $and rather than as a plain `_id`, because callers
-    // routinely write `{ _id: req.params.id, ...tenantFilter(req) }` — a
-    // bare `_id` here would overwrite theirs and hand back some other
-    // campaign the contractor happens to be assigned to. Under $and both
-    // constraints must hold.
-    filter.$and = [{ _id: { $in: vis.campaignIds || [] } }];
-    return filter;
-  }
-
-  // 'own' and, until teams exist, 'team'
-  filter[ownerField] = req.user._id || req.user.id;
-  return filter;
+/** Same check for use inside a controller. Individuals always pass. */
+function hasCapability(req, capability) {
+  if (!req.membership) return true;
+  return can(req.membership, capability);
 }
 
 /**
- * The filter a controller should actually use. This is the one to reach for.
+ * The filter every query for owned records should start from. This is the
+ * one to reach for.
  *
- * While ORG_SCOPING is off it returns today's exact filter — `{ userId }` —
- * so behaviour is unchanged and existing records stay visible. Once the
- * migration has stamped every record and the flag is on, it returns the
- * org-scoped filter instead.
+ *   individual            → { userId }
+ *   admin / manager       → { organizationId }
+ *   employee              → { organizationId, userId }
  *
- * Having both behind one function means the switch happens in one place
- * rather than in thirty controllers, and there is no window where half the
- * app is scoped and half is not.
+ * Built here rather than hand-written per controller, because the dangerous
+ * bug in a multi-tenant system is the one query that forgets the org — and
+ * thirty hand-written filters is thirty chances to forget.
  *
  * @param {object} req
  * @param {string} [ownerField]  field naming the creating user
@@ -172,36 +117,128 @@ function orgScope(req, ownerField = 'userId') {
 function tenantFilter(req, ownerField = 'userId') {
   const userId = req.user && (req.user._id || req.user.id);
 
-  if (!ORG_SCOPING) {
+  if (!req.membership) {
     return { [ownerField]: userId };
   }
 
-  // Scoping is on but this caller has no org — return a filter that matches
-  // nothing rather than falling back to everything.
-  if (!req.organizationId) {
-    return { _id: null };
-  }
-
-  return orgScope(req, ownerField);
+  const filter = { organizationId: req.organizationId };
+  const vis = req.orgVisibility || { mode: 'own' };
+  if (vis.mode !== 'all') filter[ownerField] = userId;
+  return filter;
 }
 
 /**
- * What to stamp onto a NEW record.
- *
- * Applied whether or not scoping is on, so anything created from now on is
- * already correct and the migration has less to do. userId keeps its own
- * meaning — who created this — and is set by the caller as before.
+ * What to stamp onto a NEW record. Empty for an individual. userId keeps its
+ * own meaning — who created this — and is set by the caller as before.
  */
 function tenantStamp(req) {
   return req.organizationId ? { organizationId: req.organizationId } : {};
 }
 
+/**
+ * The account that holds this caller's plan, credits, purchased projects and
+ * business profile.
+ *
+ *   individual → themselves
+ *   enterprise → the organization's owning admin
+ *
+ * Every plan / credit / project lookup should key on this instead of
+ * req.user._id. That one substitution is what gives a whole team a single
+ * shared pool.
+ */
+function accountUserId(req) {
+  if (req.organization && req.organization.ownerUserId) {
+    return req.organization.ownerUserId;
+  }
+  return req.user && (req.user._id || req.user.id);
+}
+
+/**
+ * The same resolution for code with no request in hand — background jobs,
+ * and the legacy lead-credit endpoints that are handed a user id.
+ *
+ * Returns the account whose pool is drawn on, plus the organization and
+ * membership when the user is an enterprise member (both null otherwise).
+ */
+async function actorContextFor(userId) {
+  const individual = { accountUserId: userId, organizationId: null, membership: null };
+  if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) return individual;
+
+  const user = await User.findById(userId).select('accountType organizationId').lean();
+  if (!user || user.accountType !== 'enterprise' || !user.organizationId) return individual;
+
+  const [organization, membership] = await Promise.all([
+    Organization.findById(user.organizationId).select('ownerUserId').lean(),
+    Membership.activeForUser(userId),
+  ]);
+  if (!organization) return individual;
+
+  return {
+    accountUserId: organization.ownerUserId,
+    organizationId: organization._id,
+    membership,
+  };
+}
+
+/** Just the account id — see actorContextFor. */
+async function accountUserIdFor(userId) {
+  return (await actorContextFor(userId)).accountUserId;
+}
+
+/**
+ * What the client needs to know about the caller's place in their
+ * organization: which company, which role, and the flat capability list the
+ * UI renders from. The list is a convenience for hiding controls — every
+ * route still checks independently.
+ */
+function describeOrgContext(membership, organization, userId) {
+  if (!membership || !organization) return null;
+  return {
+    _id: organization._id,
+    name: organization.name,
+    slug: organization.slug,
+    role: membership.role,
+    isOwner: String(organization.ownerUserId) === String(userId),
+    capabilities: capabilitiesFor(membership),
+    visibility: visibilityFor(membership),
+  };
+}
+
+/** The same summary, from the request `protect` already resolved. */
+function orgSummaryFromReq(req) {
+  return describeOrgContext(req.membership, req.organization, req.user && req.user._id);
+}
+
+/**
+ * The same summary for a user with no request context yet — login and
+ * registration, which run before `protect`. Null for an individual account,
+ * and null for an enterprise account whose membership is no longer active.
+ */
+async function orgSummaryForUser(user) {
+  if (!user || user.accountType !== 'enterprise') return null;
+
+  const membership = await Membership.activeForUser(user._id);
+  if (!membership) return null;
+
+  const organization = await Organization.findById(membership.organizationId)
+    .select('name slug status ownerUserId')
+    .lean();
+  if (!organization || organization.status !== 'active') return null;
+
+  return describeOrgContext(membership, organization, user._id);
+}
+
 module.exports = {
-  attachOrgContext,
+  resolveOrgContext,
+  describeOrgContext,
+  orgSummaryFromReq,
+  orgSummaryForUser,
   requireOrg,
   requireCapability,
-  orgScope,
+  hasCapability,
   tenantFilter,
   tenantStamp,
-  HEADER,
+  accountUserId,
+  accountUserIdFor,
+  actorContextFor,
 };

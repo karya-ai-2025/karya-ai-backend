@@ -1,6 +1,9 @@
 const Plan = require('../models/Plan');
 const PlanPackage = require('../models/PlanPackage');
 const UserPlan = require('../models/UserPlan');
+// The account holding the plan and credits: the caller for an individual,
+// the organization's owning admin for an enterprise member (one shared pool).
+const { accountUserId } = require('../middleware/orgContext');
 
 // Get all active plans
 const getPlans = async (req, res) => {
@@ -80,7 +83,7 @@ const getPlansWithPackages = async (req, res) => {
 // Get user's current plan
 const getCurrentUserPlan = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = String(accountUserId(req));
     const now = new Date();
 
 
@@ -116,7 +119,7 @@ const getCurrentUserPlan = async (req, res) => {
 // Check if user has active plan (for project access control)
 const checkUserPlanAccess = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = String(accountUserId(req));
     const now = new Date();
 
 
@@ -174,7 +177,7 @@ const checkUserPlanAccess = async (req, res) => {
 // Create user plan (upgrade)
 const createUserPlan = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = String(accountUserId(req));
     const { planId, planPackageId } = req.body;
 
     // Validate required fields
@@ -307,7 +310,7 @@ const createUserPlan = async (req, res) => {
 const simpleUpgrade = async (req, res) => {
   try {
     const { planId, planPackageId } = req.body;
-    const userId = req.user._id;
+    const userId = accountUserId(req);
 
     // Validate required fields
     if (!planId || !planPackageId) {
@@ -511,7 +514,7 @@ const decrementProjectCount = async (userId) => {
 // Get user's billing history
 const getUserBillingHistory = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = String(accountUserId(req));
     const { page = 1, limit = 10 } = req.query;
 
     // Calculate pagination

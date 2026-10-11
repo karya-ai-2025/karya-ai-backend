@@ -3,6 +3,7 @@ const PlanPackage = require('../models/PlanPackage');
 const PlatformPaymentsOrder = require('../models/PlatformPaymentsOrder');
 const { getCashfreeClient, getCashfreeMode, getCashfreeErrorMessage } = require('../services/cashfreeService');
 const { activateUserPlanAfterPayment } = require('../services/userPlanActivationService');
+const { accountUserIdFor } = require('../middleware/orgContext');
 
 const normalizePhone = (phone) => {
   if (!phone) return '';
@@ -282,7 +283,9 @@ const fulfillPaidOrder = async (paymentOrder, cashfreeOrder) => {
   }
 
   const userPlan = await activateUserPlanAfterPayment({
-    userId: paymentOrder.userId,
+    // The order belongs to whoever paid; the plan it buys belongs to their
+    // account — the organization's, when an enterprise admin paid.
+    userId: await accountUserIdFor(paymentOrder.userId),
     planId: paymentOrder.payload.planId,
     planPackageId: paymentOrder.payload.planPackageId,
     planPackage,

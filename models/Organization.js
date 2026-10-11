@@ -1,16 +1,13 @@
 // models/Organization.js
 //
-// The company. This is the tenant — the thing that OWNS campaigns, templates,
-// lead lists, the plan and the credits.
+// The company behind an enterprise account. This is what lets several people
+// share campaigns, templates, lead lists, one plan and one credit pool, and
+// keep that work when someone leaves.
 //
-// Until now everything was owned by an individual User, so three people from
-// the same company were three unrelated islands. An Organization is what lets
-// them share work, share one credit pool, and keep that work when someone
-// leaves.
+// Only enterprise signups create one. Individual accounts have no
+// organization at all and keep owning their data by userId.
 //
-// A User is NOT tied to one Organization. The link lives in Membership, so one
-// person can belong to several — an expert working for three clients has three
-// memberships and one account.
+// Who belongs to it, and in what role, lives in Membership.
 
 const mongoose = require('mongoose');
 
@@ -34,29 +31,18 @@ const organizationSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ── Personal orgs ───────────────────────────────────────────────────
-    // Every existing user gets one of these at migration so nothing breaks:
-    // a company of one, with them as Owner. The flag lets the UI stay quiet
-    // about "your organization" until there is actually more than one person.
-    isPersonal: {
-      type: Boolean,
-      default: false,
+    // ── The owning account ──────────────────────────────────────────────
+    // The admin who created the organization. The company's plan, credits,
+    // purchased projects and business profile are held on this account, and
+    // every member is resolved to it when those are looked up — which is how
+    // the whole team draws on one pool without re-keying the billing data.
+    //
+    // This membership can never be demoted, suspended or removed.
+    ownerUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
       index: true,
-    },
-
-    // ── Domain auto-join ────────────────────────────────────────────────
-    // Only domains proven to belong to this company, the same way a sending
-    // domain is proven. Empty by default; auto-join stays off until an Owner
-    // turns it on, because a shared domain (gmail.com) would let strangers in.
-    verifiedDomains: [{
-      type: String,
-      lowercase: true,
-      trim: true,
-    }],
-
-    autoJoinOnVerifiedDomain: {
-      type: Boolean,
-      default: false,
     },
 
     status: {
@@ -66,8 +52,6 @@ const organizationSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Denormalised from BusinessProfile at migration so the org is readable
-    // on its own. The profile stays the source of truth.
     billingEmail: {
       type: String,
       lowercase: true,
@@ -83,7 +67,6 @@ const organizationSchema = new mongoose.Schema(
 );
 
 organizationSchema.index({ name: 'text' });
-organizationSchema.index({ verifiedDomains: 1 });
 
 /**
  * Build a unique slug from a name.
@@ -91,11 +74,11 @@ organizationSchema.index({ verifiedDomains: 1 });
  * two customers called "Acme" is ordinary, not an error.
  */
 organizationSchema.statics.buildSlug = async function (name) {
-  const base = String(name || 'workspace')
+  const base = String(name || 'company')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 40) || 'workspace';
+    .slice(0, 40) || 'company';
 
   let slug = base;
   let n = 1;

@@ -81,6 +81,23 @@ const emailLimiter = rateLimit({
 });
 
 /**
+ * Rate limiter for team invitations. Looser than emailLimiter: an admin
+ * setting up a company legitimately invites a whole team in one sitting.
+ */
+const inviteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50, // 50 invitations per hour
+  keyGenerator,
+  message: {
+    success: false,
+    status: 'error',
+    message: 'Too many invitations sent. Please try again after an hour.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+/**
  * Rate limiter for registration
  */
 const registrationLimiter = rateLimit({
@@ -101,5 +118,6 @@ module.exports = {
   authLimiter,
   passwordResetLimiter,
   emailLimiter,
+  inviteLimiter,
   registrationLimiter
 };

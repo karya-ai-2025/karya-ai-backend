@@ -155,19 +155,29 @@ const userSchema = new mongoose.Schema(
     // Admin access — independent of activeRole so normal platform usage is unaffected
     isAdmin: { type: Boolean, default: false },
 
-    // ── Organization context ──────────────────────────────────────────────
-    // Which org this user was last acting in, so a returning session lands
-    // where they left off.
+    // ── Account type ──────────────────────────────────────────────────────
+    // Chosen once at signup. An 'individual' account owns its data by userId
+    // and never touches the organization code. An 'enterprise' account
+    // belongs to exactly one Organization, and its role there (admin /
+    // manager / employee) decides what it may see and do.
+    accountType: {
+      type: String,
+      enum: {
+        values: ['individual', 'enterprise'],
+        message: 'Account type must be individual or enterprise'
+      },
+      default: 'individual'
+    },
+
+    // The enterprise this account belongs to; null for individuals.
     //
-    // Deliberately NOT "the user's organization": a person can belong to
-    // several (an expert hired by three clients is one account with three
-    // memberships). The real link lives in the Membership collection, and
-    // this is only a convenience — it is always re-checked against an active
-    // membership before it is trusted.
-    lastActiveOrgId: {
+    // A pointer for convenience, not the grant: the Membership row is what
+    // actually gives access, and `protect` re-checks it on every request.
+    organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',
-      default: null
+      default: null,
+      index: true
     }
   },
   {
