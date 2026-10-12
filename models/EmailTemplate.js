@@ -23,6 +23,23 @@ const emailTemplateSchema = new mongoose.Schema(
       required: [true, 'User ID is required'],
       index: true
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
+
+    // Set when an admin wrote this template for the customer while building a
+    // campaign on their behalf. userId above stays the customer's — they own
+    // and can edit it; this only records who drafted it.
+    createdByAdmin: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
 
     // Email Content
     subject: {
@@ -436,6 +453,9 @@ emailTemplateSchema.methods.toJSON = function () {
   delete template.__v;
   return template;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+emailTemplateSchema.index({ organizationId: 1, isActive: 1 });
 
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema, 'email_templates');
 

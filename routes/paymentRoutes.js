@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { requireCapability } = require('../middleware/orgContext');
 const {
   createCashfreeOrder,
   verifyCashfreeOrder,
@@ -10,7 +11,7 @@ const {
 router.use(protect);
 
 router.put('/customer-details', updatePaymentCustomerDetails);
-router.post('/cashfree/create-order', createCashfreeOrder);
-router.post('/cashfree/verify-order', verifyCashfreeOrder);
+router.post('/cashfree/create-order', requireCapability('billing.manage'), createCashfreeOrder);
+router.post('/cashfree/verify-order', requireCapability('billing.manage'), verifyCashfreeOrder);
 
 module.exports = router;

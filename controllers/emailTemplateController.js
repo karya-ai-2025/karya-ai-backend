@@ -4,6 +4,7 @@ const {
   deleteAttachmentBlob,
   uploadAttachmentBuffer
 } = require('../services/blobStorageService');
+const { tenantFilter, tenantStamp } = require('../middleware/orgContext');
 // const { readFormFields } = require('../services/pdfFillService'); // PDF-per-lead feature disabled for live (uploadDocumentTemplate route is off)
 
 // Lead attributes a PDF field can be mapped to (matches campaign selectedLeads).
@@ -56,7 +57,9 @@ const allowedAttachmentMimeTypes = new Set([
   'image/png',
   'image/gif',
   'text/plain',
-  'text/csv'
+  'text/csv',
+  // A designed email can also be sent as an attached .html file.
+  'text/html'
 ]);
 
 const allowedAttachmentExtensions = new Set([
@@ -72,7 +75,9 @@ const allowedAttachmentExtensions = new Set([
   '.png',
   '.gif',
   '.txt',
-  '.csv'
+  '.csv',
+  '.html',
+  '.htm'
 ]);
 
 const getFileExtension = (fileName = '') => {
@@ -122,10 +127,10 @@ const normalizeTemplateAttachments = (attachments = [], userId) => {
 // @access  Private
 const getEmailTemplates = async (req, res) => {
   try {
-    const { category, templateType, search, page = 1, limit = 10 } = req.query;
+    const { category, templateType, search, page = 1, limit } = req.query;
     const userId = req.user.id;
 
-    let query = { userId, isActive: true };
+    let query = { ...tenantFilter(req), isActive: true };
 
     // Apply filters
     if (category) query.category = category;
@@ -137,10 +142,17 @@ const getEmailTemplates = async (req, res) => {
       // Use search method for text search
       templates = await EmailTemplate.searchTemplates(search, userId);
     } else {
-      templates = await EmailTemplate.find(query)
-        .sort({ 'usageStats.timesUsed': -1, updatedAt: -1 })
-        .limit(limit * 1)
-        .skip((page - 1) * limit);
+      // No explicit limit → return ALL of the user's templates. The campaign
+      // template pickers need the full list, not just the first 10 (that cap was
+      // why newly-added templates past the 10th didn't show up). Pagination is
+      // applied only when a limit is explicitly requested (capped at 500).
+      let cursor = EmailTemplate.find(query)
+        .sort({ 'usageStats.timesUsed': -1, updatedAt: -1 });
+      if (limit) {
+        const lim = Math.min(parseInt(limit, 10) || 10, 500);
+        cursor = cursor.limit(lim).skip((page - 1) * lim);
+      }
+      templates = await cursor;
     }
 
     const total = await EmailTemplate.countDocuments(query);
@@ -173,7 +185,7 @@ const getEmailTemplate = async (req, res) => {
   try {
     const template = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId: req.user.id,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -232,6 +244,7 @@ const createEmailTemplate = async (req, res) => {
       subject,
       emailBody,
       userId,
+      ...tenantStamp(req),
       templateType: templateType || 'campaign',
       category: category || 'general',
       tags: tags || [],
@@ -271,7 +284,7 @@ const updateEmailTemplate = async (req, res) => {
     const userId = req.user.id || req.user._id;
     const template = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -324,7 +337,7 @@ const deleteEmailTemplate = async (req, res) => {
   try {
     const template = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId: req.user.id,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -360,7 +373,7 @@ const previewEmailTemplate = async (req, res) => {
   try {
     const template = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId: req.user.id,
+      ...tenantFilter(req),
       isActive: true
     });
 
@@ -464,7 +477,7 @@ const getPopularTemplates = async (req, res) => {
     const { limit = 5 } = req.query;
 
     const popularTemplates = await EmailTemplate.find({
-      userId: req.user.id,
+      ...tenantFilter(req),
       isActive: true,
       'usageStats.timesUsed': { $gt: 0 }
     })
@@ -493,7 +506,7 @@ const duplicateEmailTemplate = async (req, res) => {
   try {
     const originalTemplate = await EmailTemplate.findOne({
       _id: req.params.id,
-      userId: req.user.id,
+      ...tenantFilter(req),
       isActive: true
     });
 

@@ -9,8 +9,10 @@ const { config } = require('../config/config');
  * @param {number} statusCode - HTTP status code
  * @param {Object} res - Express response object
  * @param {string} message - Success message
+ * @param {Object} [extra] - Extra fields merged onto the user in the response.
+ *   Used to attach `organization` (role + capabilities) for enterprise accounts.
  */
-const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
+const sendTokenResponse = (user, statusCode, res, message = 'Success', extra = {}) => {
   // Generate token
   const token = user.generateAuthToken();
   
@@ -26,7 +28,7 @@ const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
   };
   
   // Remove sensitive data from user object
-  const userResponse = user.toJSON();
+  const userResponse = { ...user.toJSON(), ...extra };
   
   res
     .status(statusCode)

@@ -1,4 +1,7 @@
 const UserCreditConsumption = require('../models/UserCreditConsumption'); // Adjust path as needed
+// The account holding the plan and credits: the caller for an individual,
+// the organization's owning admin for an enterprise member (one shared pool).
+const { accountUserId } = require('../middleware/orgContext');
 
 // @desc    Get leads that user has accessed/downloaded
 // @route   GET /api/leads/user-leads
@@ -6,7 +9,7 @@ const UserCreditConsumption = require('../models/UserCreditConsumption'); // Adj
 const getUserLeads = async (req, res) => {
   try {
     // Auth middleware ensures req.user exists
-    const userId = req.user.id || req.user._id;
+    const userId = String(accountUserId(req));
     console.log(`Fetching leads for authenticated user ${userId}`);
     console.log('User object:', { id: req.user.id, email: req.user.email, fullName: req.user.fullName });
 
@@ -72,7 +75,7 @@ const getUserLeads = async (req, res) => {
 const getUserLeadsCount = async (req, res) => {
   try {
     // Auth middleware ensures req.user exists
-    const userId = req.user.id || req.user._id;
+    const userId = String(accountUserId(req));
     console.log(`Fetching leads count for authenticated user ${userId}`);
 
     const count = await UserCreditConsumption.countDocuments({

@@ -255,6 +255,29 @@ const scheduleCallConfirmationTemplate = (name, dateTime, timezone, meetLink) =>
   `);
 };
 
+// Names in an invite are typed by one customer and delivered to someone
+// else's inbox, so they are escaped rather than trusted.
+const escapeHtml = (value = '') => String(value)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const teamInviteTemplate = (inviterName, organizationName, role, inviteUrl) => baseTemplate(`
+  <h1 style="color: #1a1a1a; margin-bottom: 20px;">You've been invited to join ${escapeHtml(organizationName)}</h1>
+  <p>Hi,</p>
+  <p>${escapeHtml(inviterName)} has invited you to join <strong>${escapeHtml(organizationName)}</strong> on Karya-AI as ${role === 'admin' || role === 'employee' ? 'an' : 'a'} <strong>${escapeHtml(role)}</strong>.</p>
+  <p>Click the button below to set up your account:</p>
+  <div style="text-align: center;">
+    <a href="${inviteUrl}" class="button">Accept Invitation</a>
+  </div>
+  <p>Or copy and paste this link in your browser:</p>
+  <p style="word-break: break-all; color: #8B5CF6; font-size: 14px;">${inviteUrl}</p>
+  <p><strong>This invitation will expire in 7 days.</strong></p>
+  <p>If you weren't expecting this, you can safely ignore this email.</p>
+`);
+
 const meetingReminderTemplate = (name, dateTime, timezone, meetLink) => {
   const formattedDate = new Date(dateTime).toLocaleDateString('en-IN', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone,
@@ -290,5 +313,6 @@ module.exports = {
     otp: otpTemplate,
     scheduleCallConfirmation: scheduleCallConfirmationTemplate,
     meetingReminder: meetingReminderTemplate,
+    teamInvite: teamInviteTemplate,
   },
 };

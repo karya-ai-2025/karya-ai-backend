@@ -2,6 +2,7 @@ const Campaign = require('../models/Campaign');
 const CampaignEmail = require('../models/CampaignEmail');
 const EmailTemplate = require('../models/EmailTemplate');
 const UserPlan = require('../models/UserPlan');
+const { accountUserIdFor } = require('../middleware/orgContext');
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const { sendEmail } = require('./mailgunService');
 const { downloadAttachmentBuffer, uploadAttachmentBuffer } = require('./blobStorageService');
@@ -55,7 +56,10 @@ const refundUnusedCredits = async (campaignId) => {
 
   if (refundAmount <= 0) return;
 
-  const userPlans = await UserPlan.findActiveByUser(campaign.userId);
+  // Refund the pool the reservation came from: the creator's own plan, or
+  // their organization's shared one.
+  const accountId = await accountUserIdFor(campaign.userId);
+  const userPlans = await UserPlan.findActiveByUser(accountId);
   const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
   if (!userPlan) return;
 
@@ -63,7 +67,9 @@ const refundUnusedCredits = async (campaignId) => {
   await userPlan.save();
 
   await UserCreditConsumption.create({
-    userId: campaign.userId,
+    userId: accountId,
+    actorUserId: campaign.userId,
+    ...(campaign.organizationId ? { organizationId: campaign.organizationId } : {}),
     userPlanId: userPlan._id,
     actionType: 'SEND_CAMPAIGN_EMAIL',
     creditsConsumed: refundAmount,
@@ -288,4 +294,151 @@ const processCampaign = async (campaignId) => {
   return { sentCount, failedCount };
 };
 
-module.exports = { processCampaign, refundUnusedCredits };
+// ── Follow-up / reminder round ──────────────────────────────────────────────
+// Sends another round on an EXISTING campaign to a specific set of recipients
+// (a segment) with a chosen template, as emailType 'follow-up'. Reuses the same
+// personalize → Mailgun → stats loop as the primary send. Charges only for
+// emails actually sent.
+const sendCampaignRound = async ({ campaignId, recipients = [], template, emailType = 'follow-up', segment = '' }) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new Error('Campaign not found');
+  if (!template) throw new Error('Template not found for follow-up round');
+
+  const templateAttachments = normalizeAttachmentMetadata(template.attachments);
+  let cachedMailAttachments = null;
+  const getMailAttachments = async () => {
+    if (!cachedMailAttachments) cachedMailAttachments = buildMailAttachments(templateAttachments);
+    return cachedMailAttachments;
+  };
+
+  const costPerEmail = campaign.creditsPerEmail || 1;
+
+  // Build one CampaignEmail per recipient for this round (skip anyone who already
+  // got this follow-up type — de-dup).
+  const roundEmails = [];
+  for (const lead of recipients) {
+    if (!lead.leadEmail || !lead.leadEmail.includes('@')) continue;
+
+    // Dedupe within THIS round only. Keying on emailType alone would treat a
+    // later round (say the final call) as a duplicate of an earlier follow-up
+    // and skip the recipient entirely.
+    const existing = await CampaignEmail.findOne({
+      campaignId: campaign._id,
+      leadEmail: lead.leadEmail,
+      emailType,
+      ...(emailType === 'follow-up' ? { roundSegment: segment } : {})
+    });
+    if (existing) continue;
+
+    const nameParts = String(lead.leadName || '').trim().split(' ');
+    const leadData = {
+      firstName: nameParts[0] || '',
+      lastName: nameParts.slice(1).join(' ') || '',
+      fullName: lead.leadName || '',
+      company: lead.leadCompany || '',
+      email: lead.leadEmail
+    };
+    const { subject, body } = template.personalizeContent(leadData);
+
+    const ce = new CampaignEmail({
+      campaignId: campaign._id,
+      userId: campaign.userId,
+      leadId: lead.leadId,
+      leadEmail: lead.leadEmail,
+      leadName: lead.leadName || lead.leadEmail,
+      leadCompany: lead.leadCompany || '',
+      personalizedSubject: subject,
+      personalizedBody: body,
+      attachments: templateAttachments,
+      emailType,
+      roundSegment: emailType === 'follow-up' ? segment : undefined,
+      status: 'pending',
+      creditsConsumed: costPerEmail
+    });
+    await ce.save();
+    roundEmails.push(ce);
+  }
+
+  await template.incrementUsage();
+
+  const delayBetweenEmails = Math.ceil(3600000 / (campaign.settings.sendingRate || 100));
+  let sentCount = 0;
+  let failedCount = 0;
+
+  for (const ce of roundEmails) {
+    try {
+      ce.status = 'sending';
+      ce.queuedAt = new Date();
+      await ce.save();
+
+      const isTextOnly = (template.settings?.contentType || 'html') === 'text';
+      const mailAttachments = await getMailAttachments();
+      const result = await sendEmail({
+        to: ce.leadEmail,
+        subject: ce.personalizedSubject,
+        html: isTextOnly ? undefined : preserveLineBreaks(ce.personalizedBody),
+        text: isTextOnly ? ce.personalizedBody : stripHtml(ce.personalizedBody),
+        attachments: mailAttachments
+      });
+
+      ce.status = 'sent';
+      ce.sentAt = new Date();
+      if (result.id) ce.mailgunMessageId = result.id;
+      await ce.save();
+      sentCount++;
+
+      await Campaign.findByIdAndUpdate(campaign._id, {
+        $inc: { 'stats.sentCount': 1, totalCreditsConsumed: costPerEmail }
+      });
+    } catch (error) {
+      console.error(`Follow-up send failed to ${ce.leadEmail}:`, error.message);
+      ce.status = 'failed';
+      ce.errorMessage = error.message;
+      await ce.save();
+      failedCount++;
+      await Campaign.findByIdAndUpdate(campaign._id, { $inc: { 'stats.failedCount': 1 } });
+    }
+
+    if (delayBetweenEmails > 0) await sleep(delayBetweenEmails);
+  }
+
+  // Charge only for follow-up emails actually sent.
+  if (sentCount > 0) {
+    try {
+      const accountId = await accountUserIdFor(campaign.userId);
+      const plans = await UserPlan.findActiveByUser(accountId);
+      const plan = plans && plans.length ? plans[0] : null;
+      if (plan) {
+        const consumed = sentCount * costPerEmail;
+        plan.creditsUsed += consumed;
+        await plan.save();
+        await UserCreditConsumption.create({
+          userId: accountId,
+          actorUserId: campaign.userId,
+          ...(campaign.organizationId ? { organizationId: campaign.organizationId } : {}),
+          userPlanId: plan._id,
+          actionType: 'SEND_CAMPAIGN_EMAIL',
+          creditsConsumed: consumed,
+          leadId: `campaign_${campaign._id}_followup`,
+          metadata: { type: 'FOLLOW_UP', campaignId: campaign._id, emailType, segment, sent: sentCount }
+        });
+      }
+    } catch (err) {
+      console.error('Follow-up credit consume failed:', err.message);
+    }
+  }
+
+  // Record the round + return the campaign to a stable state.
+  const fresh = await Campaign.findById(campaign._id);
+  if (fresh) {
+    fresh.rounds = fresh.rounds || [];
+    fresh.rounds.push({ type: emailType, segment, templateId: template._id, sentCount, sentAt: new Date() });
+    if (fresh.status === 'sending') fresh.status = 'completed';
+    await fresh.save();
+  }
+
+  console.log(`Follow-up round for ${campaign._id} finished. Sent: ${sentCount}, Failed: ${failedCount}`);
+  return { sentCount, failedCount };
+};
+
+module.exports = { processCampaign, refundUnusedCredits, sendCampaignRound };

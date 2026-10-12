@@ -7,6 +7,7 @@ const { blockPurchases } = require('../middleware/purchaseGuard');
 const ExpertProfile = require('../models/ExpertProfile');
 const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
+const { accountUserId, requireCapability, tenantStamp } = require('../middleware/orgContext');
 
 const CATEGORY_MAP = {
   'Digital Marketing':      'outbound',
@@ -200,8 +201,10 @@ router.post('/', [
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/user/my-projects', protect, async (req, res) => {
   try {
+    // Projects are held by the account — the caller's own, or their
+    // organization's — so every member sees what the company has bought.
     const purchases = await ProjectUser.find({
-      userId: req.user._id,
+      userId: accountUserId(req),
       catalogId: { $ne: null },
     })
       .populate('catalogId', 'slug title tagline theme stats isFeatured')
@@ -232,6 +235,7 @@ router.get('/user/my-projects', protect, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/:slug/purchase', blockPurchases, [
   protect,
+  requireCapability('billing.manage'), // enterprise: only an admin buys for the company
   param('slug').isString().trim(),
   body('tierId').isIn(['credit', 'bronze', 'silver', 'gold']).withMessage('Invalid tierId'),
   handleValidationErrors,
@@ -250,10 +254,11 @@ router.post('/:slug/purchase', blockPurchases, [
 
     // Upsert: create if new, update tierId + lastAccessedAt if already exists
     const purchase = await ProjectUser.findOneAndUpdate(
-      { userId: req.user._id, catalogId: catalog._id },
+      { userId: accountUserId(req), catalogId: catalog._id },
       {
         $setOnInsert: {
-          userId:      req.user._id,
+          userId:      accountUserId(req),
+          ...tenantStamp(req),
           catalogId:   catalog._id,
           projectSlug: catalog.slug,
           status:      'started',
@@ -289,6 +294,7 @@ router.post('/:slug/purchase', blockPurchases, [
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:slug/purchase', [
   protect,
+  requireCapability('billing.manage'),
   param('slug').isString().trim(),
   handleValidationErrors,
 ], async (req, res) => {
@@ -299,7 +305,7 @@ router.delete('/:slug/purchase', [
     }
 
     const result = await ProjectUser.findOneAndDelete({
-      userId:    req.user._id,
+      userId:    accountUserId(req),
       catalogId: catalog._id,
     });
 

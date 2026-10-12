@@ -1,4 +1,11 @@
+const EmailValidation = require('../models/EmailValidation');
+
 const DEFAULT_NEVER_BOUNCE_BASE_URL = 'https://api.neverbounce.com/v4';
+
+// How long a cached validation result stays "fresh" before we re-check (days).
+const CACHE_TTL_DAYS = Number(process.env.EMAIL_VALIDATION_TTL_DAYS) > 0
+  ? Number(process.env.EMAIL_VALIDATION_TTL_DAYS)
+  : 90;
 
 const getApiKey = () => process.env.NEVER_BOUNCE_API_KEY;
 
@@ -88,18 +95,41 @@ const runWithConcurrency = async (items, limit, worker) => {
   return results;
 };
 
-const validateEmailBatch = async (emails) => {
-  const apiKey = getApiKey();
+// ── Cache layer ───────────────────────────────────────────────────────────────
 
-  if (!apiKey) {
-    throw new Error('NEVER_BOUNCE_API_KEY is not set in environment variables');
-  }
-
+// Look up which of these emails already have a FRESH cached result (< TTL days).
+// Returns the cached results keyed by email + the list still needing validation.
+// One batched $in query on the unique `email` index — fast even at millions.
+const getCachedValidations = async (emails) => {
   const uniqueEmails = [...new Set((emails || []).map(normalizeEmail).filter(Boolean))];
+  const cachedMap = {};
+  if (uniqueEmails.length === 0) return { cachedMap, toValidate: [] };
 
-  if (uniqueEmails.length === 0) {
-    return { results: [], errors: [] };
+  try {
+    const freshSince = new Date(Date.now() - CACHE_TTL_DAYS * 864e5);
+    const docs = await EmailValidation.find(
+      { email: { $in: uniqueEmails }, checkedAt: { $gte: freshSince } },
+      { email: 1, status: 1, providerStatus: 1, _id: 0 }
+    ).lean();
+    docs.forEach((d) => {
+      cachedMap[d.email] = { email: d.email, status: d.status, providerStatus: d.providerStatus, cached: true };
+    });
+  } catch (err) {
+    // If the cache lookup fails, don't block — validate everything.
+    return { cachedMap: {}, toValidate: uniqueEmails };
   }
+
+  const toValidate = uniqueEmails.filter((e) => !cachedMap[e]);
+  return { cachedMap, toValidate };
+};
+
+// Validate the given emails against NeverBounce, then upsert the results into the
+// cache. Returns the fresh results (mapNeverBounceResult shape + cached:false).
+const validateAndCache = async (emails) => {
+  const apiKey = getApiKey();
+  const uniqueEmails = [...new Set((emails || []).map(normalizeEmail).filter(Boolean))];
+  if (uniqueEmails.length === 0) return [];
+  if (!apiKey) throw new Error('NEVER_BOUNCE_API_KEY is not set in environment variables');
 
   const concurrency = Number(process.env.NEVER_BOUNCE_VALIDATION_CONCURRENCY || 5);
   const results = await runWithConcurrency(
@@ -108,14 +138,51 @@ const validateEmailBatch = async (emails) => {
     (email) => validateSingleEmail(email, apiKey)
   );
 
+  // Persist to cache (upsert per email). A cache-write failure must never break
+  // the validation response.
+  try {
+    const ops = results
+      .map((r) => {
+        const email = normalizeEmail(r.email);
+        if (!email) return null;
+        return {
+          updateOne: {
+            filter: { email },
+            update: { $set: { email, status: r.status || 'unknown', providerStatus: r.providerStatus || '', provider: 'neverbounce', checkedAt: new Date() } },
+            upsert: true
+          }
+        };
+      })
+      .filter(Boolean);
+    if (ops.length) await EmailValidation.bulkWrite(ops, { ordered: false });
+  } catch (err) {
+    console.error('[emailValidation] cache write failed:', err.message);
+  }
+
+  return results.map((r) => ({ ...r, cached: false }));
+};
+
+// Cache-aware batch: reuse fresh cached results, only hit NeverBounce for the
+// rest. Returns results + how many were fresh (charged) vs from cache (free).
+const validateEmailBatch = async (emails) => {
+  const uniqueEmails = [...new Set((emails || []).map(normalizeEmail).filter(Boolean))];
+  if (uniqueEmails.length === 0) return { results: [], errors: [], freshCount: 0, cachedCount: 0 };
+
+  const { cachedMap, toValidate } = await getCachedValidations(uniqueEmails);
+  const fresh = toValidate.length ? await validateAndCache(toValidate) : [];
+
   return {
-    results,
-    errors: []
+    results: [...Object.values(cachedMap), ...fresh],
+    errors: [],
+    freshCount: toValidate.length,
+    cachedCount: uniqueEmails.length - toValidate.length
   };
 };
 
 module.exports = {
   validateEmailBatch,
   validateSingleEmail,
+  getCachedValidations,
+  validateAndCache,
   normalizeEmail
 };

@@ -57,6 +57,15 @@ const exportedLeadSchema = new mongoose.Schema(
     employees: {
       type: mongoose.Schema.Types.Mixed
     },
+    // Email verification status (from NeverBounce, via the EmailValidation cache).
+    // 'valid' | 'invalid' | 'catchall' | 'disposable' | 'unknown' | '' (unchecked)
+    verificationStatus: {
+      type: String,
+      default: ''
+    },
+    verifiedAt: {
+      type: Date
+    },
     rawData: {
       type: mongoose.Schema.Types.Mixed,
       default: {}
@@ -71,6 +80,15 @@ const userCrmSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: [true, 'User ID is required'],
+      index: true
+    },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
       index: true
     },
     crmObjectName: {
@@ -169,6 +187,9 @@ userCrmSchema.methods.toJSON = function () {
   delete crmObject.__v;
   return crmObject;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userCrmSchema.index({ organizationId: 1, createdAt: -1 });
 
 const UserCRM = mongoose.model('UserCRM', userCrmSchema, 'userCRM');
 

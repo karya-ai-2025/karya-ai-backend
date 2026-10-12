@@ -8,6 +8,15 @@ const userPlanSchema = new mongoose.Schema(
       ref: 'User',
       required: [true, 'User ID is required']
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
 
     // Plan that was purchased
     planId: {
@@ -225,6 +234,9 @@ userPlanSchema.methods.hasEnoughCredits = function(requiredCredits) {
   const remainingCredits = this.totalCredits - this.creditsUsed;
   return remainingCredits >= requiredCredits;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userPlanSchema.index({ organizationId: 1, status: 1 });
 
 const UserPlan = mongoose.model('UserPlan', userPlanSchema);
 

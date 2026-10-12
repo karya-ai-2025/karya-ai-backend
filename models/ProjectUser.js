@@ -8,6 +8,15 @@ const projectUserSchema = new Schema({
     ref: 'User',
     required: [true, 'User ID is required']
   },
+  // ── Tenant ───────────────────────────────────────────────────────────
+  // Set only for enterprise accounts: the organization this record belongs
+  // to, with userId above meaning "who created it". Absent for individual
+  // accounts, whose records are owned by userId alone.
+  organizationId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Organization',
+    index: true
+  },
 
   // Project reference (internal Project model — used by project management routes)
   projectId: {
@@ -169,5 +178,8 @@ projectUserSchema.statics.getUserProjects = function(userId, options = {}) {
 projectUserSchema.statics.hasUserAccess = function(userId, projectId) {
   return this.findOne({ userId, projectId });
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+projectUserSchema.index({ organizationId: 1, projectSlug: 1 });
 
 module.exports = mongoose.model('ProjectUser', projectUserSchema);

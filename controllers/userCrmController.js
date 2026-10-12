@@ -1,3 +1,4 @@
+const { tenantFilter, tenantStamp } = require('../middleware/orgContext');
 const UserCRM = require('../models/UserCRM');
 
 const buildDefaultCrmName = () => {
@@ -55,7 +56,7 @@ const getUserCrmObjects = async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
 
-    const crmObjects = await UserCRM.find({ userId })
+    const crmObjects = await UserCRM.find(tenantFilter(req))
       .sort({ createdAt: -1 })
       .lean();
 
@@ -84,7 +85,7 @@ const getUserCrmObject = async (req, res) => {
 
     const crmObject = await UserCRM.findOne({
       _id: req.params.id,
-      userId
+      ...tenantFilter(req)
     }).lean();
 
     if (!crmObject) {
@@ -136,6 +137,7 @@ const createUserCrmObject = async (req, res) => {
 
     const crmObject = await UserCRM.create({
       userId,
+      ...tenantStamp(req),
       crmObjectName: finalName,
       source,
       exportFormat,
@@ -189,7 +191,7 @@ const updateUserCrmObject = async (req, res) => {
     const userId = req.user.id || req.user._id;
     const crmObject = await UserCRM.findOne({
       _id: req.params.id,
-      userId
+      ...tenantFilter(req)
     });
 
     if (!crmObject) {
@@ -283,7 +285,7 @@ const deleteUserCrmObject = async (req, res) => {
 
     const crmObject = await UserCRM.findOneAndDelete({
       _id: req.params.id,
-      userId
+      ...tenantFilter(req)
     });
 
     if (!crmObject) {

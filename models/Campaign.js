@@ -23,6 +23,49 @@ const campaignSchema = new mongoose.Schema(
       required: [true, 'User ID is required'],
       index: true
     },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
+    },
+
+    // ── Hierarchy ─────────────────────────────────────────────────────────
+    // A campaign is either a parent (a folder grouping sub-campaigns) or a leaf
+    // that actually sends. Parents own no leads, no template and no stats of
+    // their own — their numbers are the sum of their children.
+    parentCampaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Campaign',
+      default: null,
+      index: true
+    },
+
+    isParent: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+
+    // ── PARKED: human-readable campaign code ────────────────────────────
+    // Undecided — nothing generates this yet and MongoDB _id is already the
+    // real unique identifier. To bring it back: uncomment below, decide
+    // whether it needs unique: true, add generation in createCampaign, and
+    // re-add campaignCode to the projections in controllers/icpController.js
+    // plus the render in components/Projects/HotLeadInBox/ICP/index.jsx.
+    // // Human-readable code shown to customers ("FIN-BLR-001").
+    // // MongoDB _id stays the real identifier; this is for conversations.
+    // campaignCode: {
+    //   type: String,
+    //   trim: true,
+    //   uppercase: true,
+    //   sparse: true,
+    //   index: true
+    // },
+    // ────────────────────────────────────────────────────────────────────
 
     // Campaign Status
     status: {
@@ -35,12 +78,53 @@ const campaignSchema = new mongoose.Schema(
       index: true
     },
 
+    // ── Approval (enterprise only) ───────────────────────────────────────
+    // An employee cannot start a campaign on their own; they submit it and a
+    // manager or admin signs it off. Stays 'none' for individual accounts and
+    // for campaigns built by someone who may start them directly.
+    approval: {
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      requestedAt: { type: Date },
+      decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      decidedAt: { type: Date },
+      note: { type: String, trim: true, maxlength: 500 }
+    },
+
     // Email Template Reference
     emailTemplateId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'EmailTemplate',
-      required: [true, 'Email template is required']
+      // Parent campaigns are folders — they never send, so they carry no template.
+      // Leaf campaigns still require one before they can start.
+      required: [
+        function () { return !this.isParent; },
+        'Email template is required'
+      ]
     },
+
+    // ── The four-email sequence ───────────────────────────────────────────
+    // A campaign is never one send. The wizard collects a template for each
+    // step, so the ICP the customer approves is already written rather than
+    // four empty boxes for the admin to fill in.
+    //
+    // emailTemplateId above stays the step-1 template, so everything that
+    // already reads it (sending, stats, the ICP preview) keeps working.
+    sequenceTemplates: [{
+      step: { type: Number, min: 1, max: 10 },
+      key: {
+        type: String,
+        enum: ['initial', 'follow_up', 'recall', 'final']
+      },
+      templateId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'EmailTemplate'
+      }
+    }],
 
     // Selected Leads for Campaign
     selectedLeads: [{
@@ -113,6 +197,24 @@ const campaignSchema = new mongoose.Schema(
         min: 0
       },
       repliedCount: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      // What those replies actually said. Counted from the classified intent on
+      // each CampaignEmail, so the campaign can report outcomes rather than
+      // just "someone wrote back".
+      meetingRequestCount: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      interestedCount: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      notInterestedCount: {
         type: Number,
         default: 0,
         min: 0
@@ -268,7 +370,40 @@ const campaignSchema = new mongoose.Schema(
         max: 100
       },
       lastCalculatedAt: Date
-    }
+    },
+
+    // Follow-up / reminder rounds sent on this campaign after the primary blast.
+    // The campaign stays the container; each round is a segment-targeted resend.
+    rounds: [{
+      type: { type: String },       // 'follow-up'
+      segment: { type: String },    // 'opened' | 'not-opened' | 'clicked'
+      templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'EmailTemplate' },
+      sentCount: { type: Number, default: 0 },
+      sentAt: { type: Date, default: Date.now }
+    }],
+
+    // ── Admin-on-behalf ──────────────────────────────────────────────────
+    // Set when an admin built this campaign for a customer after a call.
+    // userId stays the customer's throughout — this only records who acted,
+    // so "who sent this?" always has an answer.
+    createdByAdmin: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+
+    // Append-only trail of every admin action taken on someone else's
+    // campaign. Identifying information only — never a token or credential.
+    adminActions: [{
+      action: {
+        type: String,
+        enum: ['created', 'started', 'updated', 'leads_added'],
+        required: true
+      },
+      adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      adminEmail: { type: String, trim: true },
+      note: { type: String, trim: true },
+      at: { type: Date, default: Date.now }
+    }]
   },
   {
     timestamps: true,
@@ -283,6 +418,38 @@ campaignSchema.index({ createdAt: -1 });
 campaignSchema.index({ scheduledAt: 1 });
 campaignSchema.index({ 'selectedLeads.email': 1 });
 campaignSchema.index({ tags: 1 });
+campaignSchema.index({ createdByAdmin: 1, createdAt: -1 });
+
+/**
+ * Roll a parent campaign up from its children.
+ * Parents hold no counters of their own, so their numbers are summed on read.
+ * Returns the same { stats, performance } shape a leaf campaign exposes.
+ */
+campaignSchema.statics.rollUpParent = async function (parentId) {
+  const children = await this.find({ parentCampaignId: parentId }).select(`stats`).lean();
+
+  const stats = children.reduce((acc, c) => {
+    for (const k of Object.keys(acc)) acc[k] += (c.stats && c.stats[k]) || 0;
+    return acc;
+  }, {
+    totalLeads: 0, sentCount: 0, deliveredCount: 0, openedCount: 0,
+    clickedCount: 0, repliedCount: 0, bouncedCount: 0, spamCount: 0, failedCount: 0
+  });
+
+  const pct = (n, d) => (d > 0 ? Math.round((n / d) * 100) : 0);
+
+  return {
+    childCount: children.length,
+    stats,
+    performance: {
+      openRate:   pct(stats.openedCount,  stats.deliveredCount),
+      clickRate:  pct(stats.clickedCount, stats.openedCount),
+      replyRate:  pct(stats.repliedCount, stats.deliveredCount),
+      bounceRate: pct(stats.bouncedCount, stats.sentCount),
+      lastCalculatedAt: new Date()
+    }
+  };
+};
 campaignSchema.index({ emailProvider: 1 });
 
 // Virtual properties
@@ -321,6 +488,8 @@ campaignSchema.pre('save', function () {
 
 // Instance Methods
 campaignSchema.methods.canBeStarted = function () {
+  // A parent is a folder — it groups children and never sends on its own.
+  if (this.isParent) return false;
   return ['draft', 'scheduled', 'paused'].includes(this.status);
 };
 
@@ -358,6 +527,22 @@ campaignSchema.statics.findByUser = function (userId, filters = {}) {
     .sort({ createdAt: -1 });
 };
 
+/**
+ * The same list, but scoped by an already-built tenant filter rather than a
+ * bare userId.
+ *
+ * Callers pass tenantFilter(req), which is `{ userId }` for an individual
+ * account and an organization-scoped filter for an enterprise member — so
+ * this one static serves both, and there is no moment where the list and the detail view
+ * disagree about who owns what.
+ */
+campaignSchema.statics.findForTenant = function (tenant = {}, filters = {}) {
+  return this.find({ ...tenant, ...filters })
+    .populate('emailTemplateId', 'templateName subject')
+    .populate('settings.followUpTemplateId', 'templateName subject')
+    .sort({ createdAt: -1 });
+};
+
 campaignSchema.statics.getActiveCampaigns = function () {
   return this.find({ status: { $in: ['sending', 'scheduled'] } })
     .populate('userId', 'fullName email')
@@ -370,9 +555,23 @@ campaignSchema.statics.getCampaignsByStatus = function (status) {
     .sort({ updatedAt: -1 });
 };
 
-campaignSchema.statics.getUserCampaignStats = async function (userId) {
+campaignSchema.statics.getUserCampaignStats = function (userId) {
+  return this.getTenantCampaignStats({ userId });
+};
+
+/**
+ * Overview totals for whatever tenantFilter(req) describes — one user's
+ * campaigns, or an organization's. Aggregations do not cast ids the way
+ * find() does, so the filter's ids are cast here.
+ */
+campaignSchema.statics.getTenantCampaignStats = async function (tenant = {}) {
+  const match = {};
+  ['userId', 'organizationId'].forEach((key) => {
+    if (tenant[key]) match[key] = new mongoose.Types.ObjectId(String(tenant[key]));
+  });
+
   const stats = await this.aggregate([
-    { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+    { $match: match },
     {
       $group: {
         _id: null,
@@ -404,6 +603,9 @@ campaignSchema.methods.toJSON = function () {
   delete campaign.__v;
   return campaign;
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+campaignSchema.index({ organizationId: 1, status: 1, createdAt: -1 });
 
 const Campaign = mongoose.model('Campaign', campaignSchema, 'campaigns');
 

@@ -17,6 +17,13 @@ const registerValidation = [
   body('role')
     .optional()
     .isIn(['owner', 'expert']).withMessage('Role must be owner or expert'),
+  body('accountType')
+    .optional()
+    .isIn(['individual', 'enterprise']).withMessage('Account type must be individual or enterprise'),
+  body('inviteToken')
+    .optional()
+    .isHexadecimal().withMessage('Invalid invitation link')
+    .isLength({ min: 64, max: 64 }).withMessage('Invalid invitation link'),
   body('phone')
     .optional()
     .trim()
@@ -26,6 +33,13 @@ const registerValidation = [
     .optional()
     .trim()
     .isLength({ max: 100 }).withMessage('Company name cannot exceed 100 characters')
+    // An enterprise signup creates the organization from this name.
+    .custom((value, { req }) => {
+      if (req.body.accountType === 'enterprise' && !req.body.inviteToken && String(value || '').trim().length < 2) {
+        throw new Error('Company name is required for an enterprise account');
+      }
+      return true;
+    })
 ];
 
 const loginValidation = [

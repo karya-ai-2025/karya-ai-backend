@@ -131,6 +131,18 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: String,
     emailVerificationExpires: Date,
 
+    // ── Email OTP ────────────────────────────────────────────────────────
+    // A 6-digit code emailed at registration. Stored hashed, never in plain
+    // text — a leaked database row must not let someone verify an account.
+    emailOtpHash: { type: String, select: false },
+    emailOtpExpires: { type: Date, select: false },
+    // Six digits is only a million combinations, so wrong guesses are counted
+    // and the code is burned after a handful.
+    emailOtpAttempts: { type: Number, default: 0, select: false },
+    // Enforces the resend cooldown, so the endpoint can't be used to spam
+    // someone's inbox.
+    emailOtpLastSentAt: { type: Date, select: false },
+
     // Login tracking
     lastLogin: Date,
     loginAttempts: {
@@ -148,6 +160,31 @@ const userSchema = new mongoose.Schema(
 
     // Admin access — independent of activeRole so normal platform usage is unaffected
     isAdmin: { type: Boolean, default: false },
+
+    // ── Account type ──────────────────────────────────────────────────────
+    // Chosen once at signup. An 'individual' account owns its data by userId
+    // and never touches the organization code. An 'enterprise' account
+    // belongs to exactly one Organization, and its role there (admin /
+    // manager / employee) decides what it may see and do.
+    accountType: {
+      type: String,
+      enum: {
+        values: ['individual', 'enterprise'],
+        message: 'Account type must be individual or enterprise'
+      },
+      default: 'individual'
+    },
+
+    // The enterprise this account belongs to; null for individuals.
+    //
+    // A pointer for convenience, not the grant: the Membership row is what
+    // actually gives access, and `protect` re-checks it on every request.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      default: null,
+      index: true
+    },
 
     // Demo access — a walkthrough account handed to investors/partners (see
     // scripts/createDemoAccount.js). Signs in at /api/auth/demo-login with a
@@ -237,6 +274,83 @@ userSchema.methods.generatePasswordResetToken = function () {
 
   return resetToken;
 };
+
+// ── Email OTP ─────────────────────────────────────────────────────────────
+
+const OTP_LENGTH = 6;
+const OTP_TTL_MS = 10 * 60 * 1000;   // matches the wording in the OTP email
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * Create a fresh 6-digit code, store its hash, and return the plain code for
+ * emailing. Uses crypto.randomInt rather than Math.random — a predictable code
+ * is a guessable one.
+ */
+userSchema.methods.generateEmailOtp = function () {
+  const max = 10 ** OTP_LENGTH;
+  const otp = String(crypto.randomInt(0, max)).padStart(OTP_LENGTH, '0');
+
+  this.emailOtpHash = crypto.createHash('sha256').update(otp).digest('hex');
+  this.emailOtpExpires = Date.now() + OTP_TTL_MS;
+  this.emailOtpAttempts = 0;
+  this.emailOtpLastSentAt = new Date();
+
+  return otp;
+};
+
+/**
+ * Check a submitted code.
+ * Returns { ok, reason } — the reason is safe to show the user, and never says
+ * anything that would help someone guess.
+ */
+userSchema.methods.verifyEmailOtp = function (submitted) {
+  if (!this.emailOtpHash || !this.emailOtpExpires) {
+    return { ok: false, reason: 'No verification code has been requested' };
+  }
+  if (this.emailOtpExpires.getTime() < Date.now()) {
+    return { ok: false, reason: 'This code has expired. Request a new one.' };
+  }
+  if ((this.emailOtpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+    return { ok: false, reason: 'Too many incorrect attempts. Request a new code.' };
+  }
+
+  const hash = crypto.createHash('sha256').update(String(submitted).trim()).digest('hex');
+  const a = Buffer.from(hash, 'utf8');
+  const b = Buffer.from(this.emailOtpHash, 'utf8');
+  const match = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+  if (!match) {
+    this.emailOtpAttempts = (this.emailOtpAttempts || 0) + 1;
+    const left = OTP_MAX_ATTEMPTS - this.emailOtpAttempts;
+    return {
+      ok: false,
+      reason: left > 0
+        ? `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} remaining.`
+        : 'Too many incorrect attempts. Request a new code.',
+    };
+  }
+
+  return { ok: true };
+};
+
+/** Clear the code once it has been used, so it can never be replayed. */
+userSchema.methods.clearEmailOtp = function () {
+  this.emailOtpHash = undefined;
+  this.emailOtpExpires = undefined;
+  this.emailOtpAttempts = 0;
+};
+
+/** Seconds left on the resend cooldown; 0 when a resend is allowed. */
+userSchema.methods.otpResendWaitSeconds = function () {
+  if (!this.emailOtpLastSentAt) return 0;
+  const elapsed = Date.now() - this.emailOtpLastSentAt.getTime();
+  const left = OTP_RESEND_COOLDOWN_MS - elapsed;
+  return left > 0 ? Math.ceil(left / 1000) : 0;
+};
+
+userSchema.statics.OTP_TTL_MS = OTP_TTL_MS;
+userSchema.statics.OTP_MAX_ATTEMPTS = OTP_MAX_ATTEMPTS;
 
 // Method: Generate email verification token
 userSchema.methods.generateEmailVerificationToken = function () {

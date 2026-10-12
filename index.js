@@ -38,6 +38,7 @@ const creditRoutes = require('./routes/creditRoutes'); // Credit consumption rou
 const catalogRoutes = require('./routes/catalogRoutes'); // Project catalog & pricing
 const submissionRoutes = require('./routes/submissionRoutes'); // Project brief submissions
 const campaignRoutes = require('./routes/campaigns'); // Email campaigns
+const jobRoutes = require('./routes/jobRoutes'); // Job marketplace (acerstone)
 const emailTemplateRoutes = require('./routes/emailTemplates'); // Email templates
 const userCrmRoutes = require('./routes/userCrmRoutes'); // User CRM objects
 const webhookRoutes = require('./routes/webhooks'); // Mailgun webhooks
@@ -48,13 +49,18 @@ const negotiationRoutes = require('./routes/negotiationRoutes'); // Project deli
 const schedulingRoutes  = require('./routes/schedulingRoutes');  // Onboarding call scheduling
 const transcriptRoutes  = require('./routes/transcriptRoutes');  // Call transcript pipeline
 const adminRoutes       = require('./routes/adminRoutes');        // Admin analytics & management
+const infraRoutes       = require('./routes/infraRoutes');     // Admin infrastructure monitoring
+const adminCampaignRoutes = require('./routes/adminCampaignRoutes'); // Admin builds campaigns for customers
+const organizationRoutes = require('./routes/organizationRoutes'); // Org context & membership
 const resourceRoutes    = require('./routes/resourceRoutes');      // Public resource hub + admin CRUD
 const contentProjectRoutes = require('./routes/contentProjectRoutes'); // Content Project (LinkedIn + Newsletter)
 const hitlRoutes = require('./routes/hitlRoutes'); // Human-in-the-loop approval requests
+const icpRoutes = require('./routes/icpRoutes'); // Campaign ICPs + customer approval loop
 const supportRoutes = require('./routes/supportRoutes'); // Support contact emails + update subscriptions
 
 // Jobs
 const { startTranscriptJob, stopTranscriptJob } = require('./jobs/transcriptJob');
+const { startIcpAutoApproveJob, stopIcpAutoApproveJob } = require('./jobs/icpAutoApproveJob');
 const { startReminderJob,   stopReminderJob   } = require('./jobs/reminderJob');
 
 // Product analytics module (independent of Azure Application Insights)
@@ -86,6 +92,7 @@ app.use(helmet());
 //  - VS Code / dev-tunnel preview URLs
 const allowedOrigins = [
   ...config.frontendOrigins,
+  'https://localhost:3000',
   ...String(process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim())
 ].filter(Boolean);
 const isAllowedOrigin = (origin) => {
@@ -216,15 +223,20 @@ app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
 app.use('/api/conversations', conversationRoutes); // Agent conversation history
 app.use('/api/agent', agentRoutes); // Five-phase agent workflow
 app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
+app.use('/api/icp', icpRoutes); // Campaign ICPs (customer view + admin authoring)
 app.use('/api/support', supportRoutes); // Support contact emails + update subscriptions
 app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
 app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations
 app.use('/api/resources',        resourceRoutes);        // Resource hub
 app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter)
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling (Cal.com)
+app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations (public invite lookup)
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
 app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
+app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
+app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
 app.use('/api/admin',       adminRoutes);       // Admin analytics & management
+app.use('/api/jobs', jobRoutes); // Job marketplace (acerstone)
 // Keep last: planRoutes is mounted on bare /api and applies `protect` to everything
 // after its public routes, so any router mounted below it would require a login.
 app.use('/api', planRoutes); // Plan and pricing management
@@ -259,6 +271,7 @@ const startServer = async () => {
     
     // Start background jobs
     startTranscriptJob();
+    startIcpAutoApproveJob();
     startReminderJob();
 
     // Start Express server
@@ -317,6 +330,7 @@ const startServer = async () => {
     process.on('SIGTERM', () => {
       console.log('👋 SIGTERM received. Shutting down gracefully...');
       stopTranscriptJob();
+      stopIcpAutoApproveJob();
       server.close(() => {
         console.log('💤 Process terminated');
       });

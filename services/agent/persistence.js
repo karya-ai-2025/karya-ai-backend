@@ -1,5 +1,6 @@
 const Conversation = require('../../models/Conversation');
 const BusinessProfile = require('../../models/BusinessProfile');
+const { accountUserIdFor } = require('../../middleware/orgContext');
 const ExpertProfile = require('../../models/ExpertProfile');
 const { createInitialAgentState } = require('./state');
 const { buildAgentMemorySummary } = require('./memorySummary');
@@ -135,8 +136,12 @@ const loadAgentStateForUser = async ({ user, conversationId, createIfMissing = t
 
   if (!conversation) return null;
 
+  // The business profile is the account's: an enterprise member reads their
+  // organization's, held by its owning admin.
+  const profileOwnerId = await accountUserIdFor(userId);
+
   const [businessProfile, expertProfile, storedEvidence] = await Promise.all([
-    BusinessProfile.findOne({ user: userId }),
+    BusinessProfile.findOne({ user: profileOwnerId }),
     ExpertProfile.findOne({ user: userId }),
     loadConversationEvidence({ user, conversationId: conversation._id })
   ]);
@@ -175,7 +180,9 @@ const loadAgentStateForUser = async ({ user, conversationId, createIfMissing = t
 const updateBusinessProfile = async ({ user, state }) => {
   if (state.userType !== 'business') return;
 
-  const userId = getUserId(user);
+  // An enterprise member updates their organization's one profile rather
+  // than growing a private copy.
+  const userId = await accountUserIdFor(getUserId(user));
   let profile = await BusinessProfile.findOne({ user: userId });
   const data = state.businessProfile || {};
 

@@ -2,11 +2,29 @@ const mongoose = require('mongoose');
 
 const userCreditConsumptionSchema = new mongoose.Schema(
   {
-    // User who performed the action
+    // The account whose credit pool was drawn on. For an individual this is
+    // the user themselves; for an enterprise it is the organization's owning
+    // admin, so the whole team's usage reads as one history.
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: [true, 'User ID is required']
+    },
+    // Who actually performed the action. Differs from userId only for
+    // enterprise members spending from the shared pool.
+    actorUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true
+    },
+    // ── Tenant ───────────────────────────────────────────────────────────
+    // Set only for enterprise accounts: the organization this record belongs
+    // to, with userId above meaning "who created it". Absent for individual
+    // accounts, whose records are owned by userId alone.
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      index: true
     },
 
     // User's active plan at the time of consumption
@@ -164,6 +182,9 @@ userCreditConsumptionSchema.methods.getActionDescription = function() {
       return 'Unknown action';
   }
 };
+
+// Tenant-scoped lookups — every org-scoped query starts with organizationId.
+userCreditConsumptionSchema.index({ organizationId: 1, createdAt: -1 });
 
 const UserCreditConsumption = mongoose.model('UserCreditConsumption', userCreditConsumptionSchema);
 
