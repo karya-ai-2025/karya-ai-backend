@@ -102,6 +102,15 @@ const config = {
     maxRetries: parseOptionalInt(process.env.ANTHROPIC_MAX_RETRIES)
   },
 
+  // ElevenLabs Agents — the voice interview an expert takes after onboarding.
+  // agentId is the agent created by scripts/createElevenLabsInterviewAgent.js;
+  // its prompt and first message are overridden per expert at session start.
+  elevenlabs: {
+    apiKey: process.env.ELEVENLABS_API_KEY,
+    agentId: process.env.ELEVENLABS_INTERVIEW_AGENT_ID,
+    apiBase: (process.env.ELEVENLABS_API_BASE || 'https://api.elevenlabs.io').replace(/\/$/, '')
+  },
+
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100

@@ -232,6 +232,7 @@ app.use('/api/content-projects', contentProjectRoutes);  // Content Project (Lin
 app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling (Cal.com)
 app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations (public invite lookup)
 app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
+app.use('/api/expert-interview', require('./routes/expertInterviewRoutes')); // ElevenLabs voice interview after expert onboarding
 app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
 app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
 app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
