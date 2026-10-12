@@ -8,8 +8,10 @@
 //   3. We exchange the code, read the member's OIDC profile, find or create the
 //      user (with a profile for the role they signed in as), then redirect to the
 //      frontend (whichever allowed origin started the flow) at
-//      /auth/<provider>/callback#token=<jwt>&role=<role>. Failures redirect to the
-//      same page with ?error=<code>.
+//      /auth/<provider>/callback#token=<jwt>&role=<role>[&new=1][&onboard=1].
+//      new = account just created; onboard = expert profile just created, so the
+//      member still has onboarding ahead. Failures redirect to the same page with
+//      ?error=<code>.
 
 const crypto = require('crypto');
 const User = require('../models/User');
@@ -73,9 +75,10 @@ const buildFullName = (profile, email) => {
   return (name.length >= 2 ? name : fallback.padEnd(2, '_')).slice(0, 50);
 };
 
+// Returns true when a profile had to be created for the role
 const ensureProfile = async (user, role) => {
   if (role === 'expert') {
-    if (user.hasExpertProfile && user.profiles?.expert) return;
+    if (user.hasExpertProfile && user.profiles?.expert) return false;
 
     const expertProfile = await ExpertProfile.create({
       user: user._id,
@@ -84,10 +87,10 @@ const ensureProfile = async (user, role) => {
 
     user.profiles.expert = expertProfile._id;
     user.hasExpertProfile = true;
-    return;
+    return true;
   }
 
-  if (user.hasOwnerProfile && user.profiles?.owner) return;
+  if (user.hasOwnerProfile && user.profiles?.owner) return false;
 
   const businessProfile = await BusinessProfile.create({
     user: user._id,
@@ -96,6 +99,7 @@ const ensureProfile = async (user, role) => {
 
   user.profiles.owner = businessProfile._id;
   user.hasOwnerProfile = true;
+  return true;
 };
 
 /**
@@ -244,7 +248,7 @@ const createHandlers = (provider) => {
 
       // No role asked for: new accounts get the default one, returning members stay where they were
       const role = requestedRole || user.activeRole || config.socialLoginDefaultRole;
-      await ensureProfile(user, role);
+      const profileCreated = await ensureProfile(user, role);
       user.activeRole = role;
       if (emailVerified && user.email === email) user.isEmailVerified = true;
       if (!user.avatar && profile.picture) user.avatar = profile.picture;
@@ -274,7 +278,12 @@ const createHandlers = (provider) => {
       });
 
       // Token goes in the URL fragment so it never reaches server logs or Referer headers
-      const fragment = new URLSearchParams({ token, role, ...(isNewUser ? { new: '1' } : {}) });
+      const fragment = new URLSearchParams({
+        token,
+        role,
+        ...(isNewUser ? { new: '1' } : {}),
+        ...(role === 'expert' && profileCreated ? { onboard: '1' } : {})
+      });
       res.redirect(`${frontendCallback(returnTo)}#${fragment.toString()}`);
     } catch (err) {
       console.error(`${provider} sign-in failed:`, err.message);

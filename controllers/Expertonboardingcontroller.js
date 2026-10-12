@@ -57,6 +57,36 @@ async function linkExpertToProjects(expertProfileId, linkedSlugs, portfolioItems
   }
 }
 
+// Load the member's expert profile, creating it when it is missing — e.g. an
+// account that was first created as a business owner and is now onboarding as
+// an expert.
+async function getOrCreateExpertProfile(user, select) {
+  const find = (filter) => {
+    const query = ExpertProfile.findOne(filter);
+    return select ? query.select(select) : query;
+  };
+
+  let profile = user.profiles?.expert ? await find({ _id: user.profiles.expert }) : null;
+  if (!profile) profile = await find({ user: user._id });
+  if (!profile) {
+    profile = await ExpertProfile.create({
+      user: user._id,
+      profileStatus: { joinedAsExpert: new Date() }
+    });
+  }
+
+  if (!user.hasExpertProfile || String(user.profiles?.expert) !== String(profile._id)) {
+    user.set('profiles.expert', profile._id);
+    user.hasExpertProfile = true;
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { 'profiles.expert': profile._id, hasExpertProfile: true } }
+    );
+  }
+
+  return profile;
+}
+
 // ============================================
 // STEP 1: PROFILE SETUP
 // ============================================
@@ -94,17 +124,7 @@ const updateProfileSetup = asyncHandler(async (req, res, next) => {
     user.fullName = fullName;
   }
   
-  // Check if user has expert profile
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found. Please create an expert profile first.', 404));
-  }
-  
-  // Get expert profile
-  const profile = await ExpertProfile.findById(user.profiles.expert);
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user);
   
   // Update profile fields
   if (headline) profile.headline = headline;
@@ -184,15 +204,7 @@ const updateSkills = asyncHandler(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
   
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-  
-  const profile = await ExpertProfile.findById(user.profiles.expert);
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user);
   
   // Format skills - each skill is just a string from frontend
   const formattedSkills = skills.map(skill => {
@@ -282,15 +294,7 @@ const updateServices = asyncHandler(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
   
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-  
-  const profile = await ExpertProfile.findById(user.profiles.expert);
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user);
   
   // Format services
   const formattedServices = validServices.map(service => ({
@@ -358,15 +362,7 @@ const updatePortfolio = asyncHandler(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
   
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-  
-  const profile = await ExpertProfile.findById(user.profiles.expert);
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user);
   
   // Update portfolio/case studies
   if (caseStudies && Array.isArray(caseStudies)) {
@@ -466,12 +462,7 @@ const yearToDate = (value) => (yearOf(value) ? new Date(Date.UTC(yearOf(value), 
 const updateProfiling = asyncHandler(async (req, res, next) => {
   const user = await User.findById(req.user._id);
   if (!user) return next(new AppError('User not found', 404));
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-
-  const profile = await ExpertProfile.findById(user.profiles.expert).select('+profiling.ageBand');
-  if (!profile) return next(new AppError('Expert profile document not found', 404));
+  const profile = await getOrCreateExpertProfile(user, '+profiling.ageBand');
 
   const body = req.body || {};
   if (!profile.profiling) profile.profiling = {};
@@ -585,15 +576,7 @@ const getOnboardingStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
   
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-  
-  const profile = await ExpertProfile.findById(user.profiles.expert).select('+profiling.ageBand');
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user, '+profiling.ageBand');
   
   res.status(200).json({
     success: true,
@@ -721,15 +704,7 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
   
-  if (!user.hasExpertProfile || !user.profiles?.expert) {
-    return next(new AppError('Expert profile not found', 404));
-  }
-  
-  const profile = await ExpertProfile.findById(user.profiles.expert);
-  
-  if (!profile) {
-    return next(new AppError('Expert profile document not found', 404));
-  }
+  const profile = await getOrCreateExpertProfile(user);
   
   // Update user fields
   if (avatar) user.avatar = avatar;
