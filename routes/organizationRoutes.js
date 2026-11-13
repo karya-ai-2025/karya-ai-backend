@@ -1,9 +1,9 @@
 // routes/organizationRoutes.js
 //
-// Enterprise organizations: the company, its members and its invitations.
+// Organizations of every kind: the company, its members and its invitations.
 //
 // Apart from the public invitation lookup, everything here requires an
-// enterprise account (requireOrg) and then a capability for the specific
+// organization (requireOrg) and then a capability for the specific
 // action. The organization is always the caller's own — there is no
 // organization id in any of these paths.
 

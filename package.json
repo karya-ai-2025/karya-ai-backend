@@ -9,6 +9,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "dev:local": "ENV_FILE=.env.local nodemon index.js",
+    "seed:local": "ENV_FILE=.env.local node scripts/seedLocalCatalog.js",
     "postinstall": "node node_modules/prisma/build/index.js generate",
     "build": "echo 'build step'",
     "seed:projects": "node utils/seedProjects.js",

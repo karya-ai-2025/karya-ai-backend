@@ -1,7 +1,7 @@
 const { generateEmailCampaignCopy } = require('../../anthropicService');
 const { fetchEmailableLeads } = require('../leadsQuery');
 const { createDraftCampaign } = require('../emailCampaignService');
-const { hasEmailAccess, buildBuyCard } = require('../entitlements');
+const { hasEmailAccess, buildBuyCard, canBuildCampaigns, NOT_SELF_SERVE_MESSAGE } = require('../entitlements');
 const HitlRequest = require('../../../models/HitlRequest');
 
 // Reusable "you need the email project" turn — ends the modal flow.
@@ -50,6 +50,18 @@ const draftFor = (state, brief) => generateEmailCampaignCopy({
 
 // Build the draft campaign from a leadsFilter (searched / karya paths).
 const buildFromFilter = async (state, brief, filter, userId) => {
+  // Building campaigns is the partner's / Karya team's job unless the
+  // business is self-serve.
+  if (!(await canBuildCampaigns(userId))) {
+    return {
+      phase: 'email_complete',
+      nextAction: 'respond',
+      emailBrief: null,
+      uiRequest: null,
+      response: NOT_SELF_SERVE_MESSAGE
+    };
+  }
+
   // Creating the campaign is the paid action → require the email project.
   if (!(await hasEmailAccess(userId))) {
     return emailBuyGate(

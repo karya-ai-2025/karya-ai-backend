@@ -3,6 +3,11 @@
 
 const HitlRequest = require('../models/HitlRequest');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
+const { projectScopeFilter } = require('../middleware/orgContext');
+
+// Review requests are owned by the person who asked; inside a project they are
+// also limited to that project (see middleware/projectContext.js).
+const mine = (req) => ({ userId: req.user._id, ...projectScopeFilter(req) });
 const Anthropic = require('@anthropic-ai/sdk');
 
 function getAnthropic() {
@@ -19,7 +24,8 @@ const createHitlRequest = asyncHandler(async (req, res, next) => {
 
   const request = await HitlRequest.create({
     userId: req.user._id,
-    projectSlug,
+    projectSlug: req.project ? req.project.slug : projectSlug,
+    projectInstanceId: req.project ? req.project._id : null,
     type,
     title: title.trim(),
     payload,
@@ -31,12 +37,12 @@ const createHitlRequest = asyncHandler(async (req, res, next) => {
 
 // GET /api/hitl?status=pending — list the current user's requests + pending count
 const getHitlRequests = asyncHandler(async (req, res) => {
-  const filter = { userId: req.user._id };
+  const filter = mine(req);
   if (req.query.status) filter.status = req.query.status;
 
   const [requests, pendingCount] = await Promise.all([
     HitlRequest.find(filter).sort({ createdAt: -1 }).limit(100),
-    HitlRequest.countDocuments({ userId: req.user._id, status: 'pending' })
+    HitlRequest.countDocuments({ ...mine(req), status: 'pending' })
   ]);
 
   res.json({ success: true, data: requests, pendingCount });
@@ -44,7 +50,7 @@ const getHitlRequests = asyncHandler(async (req, res) => {
 
 // GET /api/hitl/:id
 const getHitlRequest = asyncHandler(async (req, res, next) => {
-  const request = await HitlRequest.findOne({ _id: req.params.id, userId: req.user._id });
+  const request = await HitlRequest.findOne({ _id: req.params.id, ...mine(req) });
   if (!request) return next(new AppError('Approval request not found', 404));
   res.json({ success: true, data: request });
 });
@@ -57,7 +63,7 @@ const updateHitlStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError('Invalid status', 400));
   }
 
-  const request = await HitlRequest.findOne({ _id: req.params.id, userId: req.user._id });
+  const request = await HitlRequest.findOne({ _id: req.params.id, ...mine(req) });
   if (!request) return next(new AppError('Approval request not found', 404));
 
   request.status = status;

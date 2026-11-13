@@ -7,11 +7,18 @@ const BusinessProfile = require('../models/BusinessProfile');
 const ExpertProfile = require('../models/ExpertProfile');
 const Organization = require('../models/Organization');
 const Membership = require('../models/Membership');
+const { foundOrganization, syncOrganizationName } = require('../services/organizationSetup');
 const { config } = require('../config/config');
 const { sendTokenResponse, clearTokenCookie } = require('../utils/generateToken');
 const { sendEmail, templates } = require('../utils/sendEmail');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
 const { orgSummaryForUser, orgSummaryFromReq, hasCapability } = require('../middleware/orgContext');
+const {
+  EXPERT_FLOW_ENABLED,
+  expertFlowPausedError,
+  isBlockedExpert,
+  moveOffExpertRole,
+} = require('../config/featureFlags');
 
 // ============================================
 // REGISTER
@@ -32,13 +39,13 @@ const register = asyncHandler(async (req, res, next) => {
     return registerFromInvite(req, res, next);
   }
 
-  // Individual or enterprise — asked once, at signup. Experts are always
-  // individual; only a business account can be an enterprise.
-  const accountType =
-    role !== 'expert' && req.body.accountType === 'enterprise' ? 'enterprise' : 'individual';
+  if (role === 'expert' && !EXPERT_FLOW_ENABLED) return next(expertFlowPausedError());
 
-  if (accountType === 'enterprise' && String(company || '').trim().length < 2) {
-    return next(new AppError('Company name is required for an enterprise account', 400));
+  // A business signup always founds its company: the founder is its first
+  // admin and can invite their team. (Partners and the Karya team sign up
+  // through their own routes.)
+  if (role !== 'expert' && String(company || '').trim().length < 2) {
+    return next(new AppError('Company name is required', 400));
   }
 
   // Check if user already exists
@@ -54,6 +61,7 @@ const register = asyncHandler(async (req, res, next) => {
     email: email.toLowerCase(),
     password,
     phone,
+    kind: 'business',
     activeRole: role || 'owner'
   });
 
@@ -69,51 +77,26 @@ const register = asyncHandler(async (req, res, next) => {
     user.profiles.expert = expertProfile._id;
     user.hasExpertProfile = true;
   } else {
-    // Default to owner
     const businessProfile = await BusinessProfile.create({
       user: user._id,
       company: {
-        name: company || `${fullName}'s Company`
+        name: String(company).trim()
       }
     });
 
     user.profiles.owner = businessProfile._id;
     user.hasOwnerProfile = true;
-  }
 
-  // Enterprise: create the company and make this person its first admin.
-  // An individual account stops here and never touches the organization code.
-  if (accountType === 'enterprise') {
-    let organization;
     try {
-      organization = await Organization.create({
-        name: String(company).trim(),
-        slug: await Organization.buildSlug(company),
-        ownerUserId: user._id,
-        createdBy: user._id,
-        billingEmail: user.email
-      });
-
-      await Membership.create({
-        organizationId: organization._id,
-        userId: user._id,
-        role: 'admin',
-        status: 'active',
-        acceptedAt: new Date()
-      });
+      await foundOrganization(user, company, req);
     } catch (error) {
-      // Half an enterprise is worse than none: an 'enterprise' user with no
-      // membership is locked out by `protect`. Undo everything so the email
-      // is free to try again.
-      console.error('Enterprise signup failed, rolling back:', error);
-      if (organization) await Organization.deleteOne({ _id: organization._id }).catch(() => {});
+      // An account without its organization is locked out by `protect`.
+      // Undo everything so the email is free to try again.
+      console.error('Business signup failed, rolling back:', error);
       await BusinessProfile.deleteOne({ user: user._id }).catch(() => {});
       await User.deleteOne({ _id: user._id }).catch(() => {});
-      return next(new AppError('Could not create your organization. Please try again.', 500));
+      return next(new AppError('Could not create your company account. Please try again.', 500));
     }
-
-    user.accountType = 'enterprise';
-    user.organizationId = organization._id;
   }
 
   // Generate email verification token
@@ -148,6 +131,58 @@ const register = asyncHandler(async (req, res, next) => {
 
   // Send response with token
   sendTokenResponse(user, 201, res, 'Registration successful! Welcome to Karya-AI.', {
+    organization: await orgSummaryForUser(user)
+  });
+});
+
+/**
+ * @desc    Register an agency / service provider (a partner account)
+ * @route   POST /api/auth/register/partner
+ * @access  Public
+ *
+ * A partner is its own kind of account: its own organization (type
+ * 'partner'), its own app and API area, and no business profile. The founder
+ * becomes the agency's admin and can invite their team. Team members join
+ * through the shared invitation flow, which gives them the organization's kind.
+ */
+const registerPartner = asyncHandler(async (req, res, next) => {
+  const { fullName, email, password, phone, company } = req.body;
+
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    return next(new AppError('An account with this email already exists', 400));
+  }
+
+  const user = await User.create({
+    fullName,
+    email: email.toLowerCase(),
+    password,
+    phone,
+    kind: 'partner'
+  });
+
+  try {
+    await foundOrganization(user, company, req);
+  } catch (error) {
+    console.error('Partner signup failed, rolling back:', error);
+    await User.deleteOne({ _id: user._id }).catch(() => {});
+    return next(new AppError('Could not create your agency account. Please try again.', 500));
+  }
+
+  user.generateEmailVerificationToken();
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Welcome to Karya-AI! Your partner account has been created 🎉',
+      html: templates.welcome(user.fullName)
+    });
+  } catch (error) {
+    console.error('Failed to send welcome email:', error);
+  }
+
+  sendTokenResponse(user, 201, res, 'Welcome to Karya-AI! Your agency account is ready.', {
     organization: await orgSummaryForUser(user)
   });
 });
@@ -191,7 +226,8 @@ const registerFromInvite = async (req, res, next) => {
     password,
     phone,
     activeRole: 'owner',
-    accountType: 'enterprise',
+    // An invited member is the same kind of account as the organization
+    kind: organization.type,
     organizationId: organization._id,
     hasOwnerProfile: !!(owner && owner.profiles && owner.profiles.owner),
     profiles: { owner: (owner && owner.profiles && owner.profiles.owner) || null },
@@ -345,21 +381,31 @@ const resendEmailOtp = asyncHandler(async (req, res, next) => {
 const login = asyncHandler(async (req, res, next) => {
   const { email, password, role } = req.body;
 
+  if (role === 'expert' && !EXPERT_FLOW_ENABLED) return next(expertFlowPausedError());
+
   // Find user and verify credentials
   const user = await User.findByCredentials(email.toLowerCase(), password);
 
-  // Enterprise accounts only work while their membership does. Say so here,
-  // rather than letting them in to find every page refusing them.
+  // Expert flow switched off: an expert-only account is kept out; one that
+  // also has a business profile signs in on its business side.
+  if (isBlockedExpert(user)) return next(expertFlowPausedError());
+  if (moveOffExpertRole(user)) await user.save({ validateBeforeSave: false });
+
+  // An account only works while its membership does. Say so here, rather
+  // than letting them in to find every page refusing them. (Legacy isAdmin
+  // staff have no organization until the Karya console replaces them.)
   const organization = await orgSummaryForUser(user);
-  if (user.accountType === 'enterprise' && !organization) {
+  if (!organization && !user.isAdmin) {
     return next(new AppError(
       'Your access to this organization has been removed. Please contact your administrator.',
       403
     ));
   }
 
-  // If specific role requested, check if user has that profile
-  if (role) {
+  // If specific role requested, check if user has that profile. Owner /
+  // expert profiles only exist on business accounts; partner and platform
+  // accounts have neither, so the field means nothing for them.
+  if (role && user.kind === 'business') {
     if (role === 'owner' && !user.hasOwnerProfile) {
       return next(new AppError('You don\'t have a Business profile. Would you like to create one?', 400));
     }
@@ -411,6 +457,8 @@ const demoLogin = asyncHandler(async (req, res, next) => {
   }
 
   if (!user.isDemo) return invalid();
+  // Demo accounts are expert walkthroughs, so they are paused with the expert flow
+  if (isBlockedExpert(user)) return next(expertFlowPausedError());
   if (user.demo?.expiresAt && user.demo.expiresAt < new Date()) {
     return next(new AppError('This demo access has expired. Please ask us for a new one.', 401));
   }
@@ -457,8 +505,7 @@ const getMe = asyncHandler(async (req, res, next) => {
     ? user.profiles.expert
     : user.profiles.owner;
 
-  // For an enterprise account: which company, which role, what it allows.
-  // Null for an individual account.
+  // Which company, which role, what it allows.
   const organization = orgSummaryFromReq(req);
 
   res.status(200).json({
@@ -485,6 +532,7 @@ const switchRole = asyncHandler(async (req, res, next) => {
   if (!['owner', 'expert'].includes(role)) {
     return next(new AppError('Invalid role. Must be owner or expert', 400));
   }
+  if (role === 'expert' && !EXPERT_FLOW_ENABLED) return next(expertFlowPausedError());
 
   const user = await User.findById(req.user._id);
 
@@ -528,6 +576,7 @@ const createProfile = asyncHandler(async (req, res, next) => {
   if (!['owner', 'expert'].includes(profileType)) {
     return next(new AppError('Invalid profile type. Must be owner or expert', 400));
   }
+  if (profileType === 'expert' && !EXPERT_FLOW_ENABLED) return next(expertFlowPausedError());
 
   const user = await User.findById(req.user._id);
 
@@ -859,8 +908,8 @@ const updateProfile = asyncHandler(async (req, res, next) => {
     }
   });
 
-  // In an enterprise the company profile is shared by the whole team, so
-  // only those who manage the organization may change it.
+  // The company profile is shared by the whole team, so only those who
+  // manage the organization may change it.
   if (Object.keys(businessUpdates).length > 0 && !hasCapability(req, 'org.manage')) {
     return next(new AppError('Only an organization admin can change company details', 403));
   }
@@ -884,6 +933,7 @@ const updateProfile = asyncHandler(async (req, res, next) => {
       businessUpdates,
       { returnDocument: 'after', runValidators: true }
     );
+    if (businessUpdates['company.name']) await syncOrganizationName(req, businessUpdates['company.name']);
   }
 
   // Populate and return updated user with profiles
@@ -979,6 +1029,7 @@ const getProfiles = asyncHandler(async (req, res, next) => {
 module.exports = {
   DEMO_EMAIL_DOMAIN,
   register,
+  registerPartner,
   login,
   demoLogin,
   logout,

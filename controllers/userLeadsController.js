@@ -1,6 +1,6 @@
 const UserCreditConsumption = require('../models/UserCreditConsumption'); // Adjust path as needed
-// The account holding the plan and credits: the caller for an individual,
-// the organization's owning admin for an enterprise member (one shared pool).
+// The account holding the plan and credits: the organization's owning admin
+// (one shared pool for the whole team).
 const { accountUserId } = require('../middleware/orgContext');
 
 // @desc    Get leads that user has accessed/downloaded

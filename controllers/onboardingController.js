@@ -3,6 +3,7 @@
 
 const User = require('../models/User');
 const BusinessProfile = require('../models/BusinessProfile');
+const { syncOrganizationName } = require('../services/organizationSetup');
 const { AppError, asyncHandler } = require('../middleware/errorHandler');
 const Anthropic = require('@anthropic-ai/sdk');
 
@@ -126,6 +127,7 @@ const updateCompanyDetails = asyncHandler(async (req, res, next) => {
     updateData,
     { returnDocument: 'after', runValidators: true }
   );
+  await syncOrganizationName(req, companyName);
   
   // Update onboarding step
   user.onboarding.owner.currentStep = Math.max(user.onboarding.owner.currentStep, 3);
@@ -475,7 +477,10 @@ const saveAllOnboardingData = asyncHandler(async (req, res, next) => {
   const profileUpdate = {};
   
   if (platformUsageType) profileUpdate.platformUsageType = platformUsageType;
-  if (companyName) profileUpdate['company.name'] = companyName;
+  if (companyName) {
+    profileUpdate['company.name'] = companyName;
+    await syncOrganizationName(req, companyName);
+  }
   if (companySize) profileUpdate.companySize = companySize;
   if (industry) profileUpdate.industry = industry;
   if (website) profileUpdate['company.website'] = website;

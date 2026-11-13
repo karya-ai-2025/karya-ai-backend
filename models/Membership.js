@@ -1,9 +1,7 @@
 // models/Membership.js
 //
-// One row = one person's place in one enterprise organization.
-//
-// Only enterprise accounts have one. An individual account has no membership
-// and no organization, and nothing here is consulted for it.
+// One row = one person's place in their organization (business, partner or
+// platform). Every account has exactly one.
 //
 // An invite is a membership too — created with an email and no userId, then
 // bound to the account when it is accepted. That way a pending invite is

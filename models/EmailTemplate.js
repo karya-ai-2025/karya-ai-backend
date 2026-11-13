@@ -33,6 +33,17 @@ const emailTemplateSchema = new mongoose.Schema(
       index: true
     },
 
+    // The purchased project (ProjectUser) this belongs to. Set from the
+    // project the request was made in — see middleware/projectContext.js. A
+    // partner working on a business's project only ever sees records carrying
+    // that project's id. Null for records made outside any project.
+    projectInstanceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProjectUser',
+      default: null,
+      index: true
+    },
+
     // Set when an admin wrote this template for the customer while building a
     // campaign on their behalf. userId above stays the customer's — they own
     // and can edit it; this only records who drafted it.

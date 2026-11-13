@@ -284,7 +284,7 @@ const fulfillPaidOrder = async (paymentOrder, cashfreeOrder) => {
 
   const userPlan = await activateUserPlanAfterPayment({
     // The order belongs to whoever paid; the plan it buys belongs to their
-    // account — the organization's, when an enterprise admin paid.
+    // account — the organization's.
     userId: await accountUserIdFor(paymentOrder.userId),
     planId: paymentOrder.payload.planId,
     planPackageId: paymentOrder.payload.planPackageId,

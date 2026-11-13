@@ -17,6 +17,8 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const BusinessProfile = require('../models/BusinessProfile');
 const ExpertProfile = require('../models/ExpertProfile');
+const { EXPERT_FLOW_ENABLED, isBlockedExpert, moveOffExpertRole } = require('../config/featureFlags');
+const { foundOrganization } = require('../services/organizationSetup');
 const { config } = require('../config/config');
 const { sendEmail, templates } = require('../utils/sendEmail');
 
@@ -39,7 +41,15 @@ const SCOPE = 'openid profile email';
 const STATE_COOKIE = 'oauth_state';
 const RETURN_COOKIE = 'oauth_return';
 const ROLE_COOKIE = 'oauth_role';
-const ROLES = ['owner', 'expert'];
+// Which page the sign-in started from, so the account kinds never mix:
+//   login    → existing accounts only; signs each into its own app, creates nothing
+//   business → the business signup page: may create a business account
+//   partner  → the agency / expert signup page: may create a partner account
+const INTENT_COOKIE = 'oauth_intent';
+const INTENTS = ['login', 'business', 'partner'];
+// Expert flow switched off (config/featureFlags.js): only the business side can be asked for
+const ROLES = EXPERT_FLOW_ENABLED ? ['owner', 'expert'] : ['owner'];
+const DEFAULT_ROLE = EXPERT_FLOW_ENABLED ? config.socialLoginDefaultRole : 'owner';
 const CANCEL_ERRORS = ['user_cancelled_login', 'user_cancelled_authorize', 'access_denied'];
 
 // Lax (not strict) so the cookies are sent on the top-level redirect back from the provider.
@@ -122,6 +132,7 @@ const createHandlers = (provider) => {
     res.clearCookie(STATE_COOKIE, cookieOptions);
     res.clearCookie(RETURN_COOKIE, cookieOptions);
     res.clearCookie(ROLE_COOKIE, cookieOptions);
+    res.clearCookie(INTENT_COOKIE, cookieOptions);
   };
 
   const redirectWithError = (res, returnTo, code) => {
@@ -177,6 +188,11 @@ const createHandlers = (provider) => {
     if (ROLES.includes(req.query.role)) res.cookie(ROLE_COOKIE, req.query.role, { ...cookieOptions, maxAge });
     else res.clearCookie(ROLE_COOKIE, cookieOptions);
 
+    // Login, business signup or partner signup — defaults to login, which
+    // never creates an account
+    const intent = INTENTS.includes(req.query.intent) ? req.query.intent : 'login';
+    res.cookie(INTENT_COOKIE, intent, { ...cookieOptions, maxAge });
+
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: credentials.clientId,
@@ -193,6 +209,7 @@ const createHandlers = (provider) => {
   const callback = async (req, res) => {
     const returnTo = req.cookies?.[RETURN_COOKIE];
     const requestedRole = ROLES.includes(req.cookies?.[ROLE_COOKIE]) ? req.cookies[ROLE_COOKIE] : null;
+    const intent = INTENTS.includes(req.cookies?.[INTENT_COOKIE]) ? req.cookies[INTENT_COOKIE] : 'login';
     const fail = (code) => redirectWithError(res, returnTo, code);
 
     try {
@@ -232,11 +249,15 @@ const createHandlers = (provider) => {
           user = existing;
           user.set(`socialLogins.${provider}`, { id: providerId, email });
         } else {
+          // Signing in creates nothing: an unknown email has to sign up first,
+          // as a business or as an agency / expert — never one by default.
+          if (intent === 'login') return fail('no_account');
           isNewUser = true;
           user = new User({
             fullName: buildFullName(profile, email),
             email,
-            activeRole: requestedRole || config.socialLoginDefaultRole,
+            kind: intent,
+            activeRole: requestedRole || DEFAULT_ROLE,
             avatar: profile.picture || null,
             isEmailVerified: emailVerified,
             socialLogins: { [provider]: { id: providerId, email } }
@@ -246,14 +267,40 @@ const createHandlers = (provider) => {
 
       if (!user.isActive) return fail('account_deactivated');
 
+      // Signing up from the wrong page with an account that already exists:
+      // accounts are one kind for life, so say so rather than mix them.
+      if (!isNewUser && intent !== 'login' && user.kind !== intent) {
+        return fail(user.kind === 'partner' ? 'account_is_partner' : 'account_is_business');
+      }
+      if (isBlockedExpert(user)) return fail('expert_paused');
+      moveOffExpertRole(user);
+
       // No role asked for: new accounts get the default one, returning members stay where they were
-      const role = requestedRole || user.activeRole || config.socialLoginDefaultRole;
-      const profileCreated = await ensureProfile(user, role);
-      user.activeRole = role;
+      const role = requestedRole || user.activeRole || DEFAULT_ROLE;
+      // Owner / expert profiles belong to business accounts only
+      const profileCreated = user.kind === 'business' ? await ensureProfile(user, role) : false;
+      if (user.kind === 'business') user.activeRole = role;
       if (emailVerified && user.email === email) user.isEmailVerified = true;
       if (!user.avatar && profile.picture) user.avatar = profile.picture;
       user.lastLogin = new Date();
       await user.save();
+
+      // A new account founds its organization, like an email signup. The
+      // provider doesn't tell us the company / agency name, so it starts from
+      // the person's name and is renamed during onboarding.
+      if (isNewUser && (user.kind === 'partner' || role === 'owner') && !user.organizationId) {
+        try {
+          // A partner starts named after themselves (an expert of one, or the
+          // agency founder renames it on the welcome profile step)
+          await foundOrganization(user, user.kind === 'partner' ? user.fullName : `${user.fullName}'s Company`, req);
+          await user.save();
+        } catch (err) {
+          console.error(`${provider} signup could not create the organization, rolling back:`, err.message);
+          await BusinessProfile.deleteOne({ user: user._id }).catch(() => {});
+          await User.deleteOne({ _id: user._id }).catch(() => {});
+          return fail('failed');
+        }
+      }
 
       if (isNewUser) {
         try {
@@ -281,6 +328,7 @@ const createHandlers = (provider) => {
       const fragment = new URLSearchParams({
         token,
         role,
+        kind: user.kind,
         ...(isNewUser ? { new: '1' } : {}),
         ...(role === 'expert' && profileCreated ? { onboard: '1' } : {})
       });

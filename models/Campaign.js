@@ -33,6 +33,17 @@ const campaignSchema = new mongoose.Schema(
       index: true
     },
 
+    // The purchased project (ProjectUser) this belongs to. Set from the
+    // project the request was made in — see middleware/projectContext.js. A
+    // partner working on a business's project only ever sees records carrying
+    // that project's id. Null for records made outside any project.
+    projectInstanceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProjectUser',
+      default: null,
+      index: true
+    },
+
     // ── Hierarchy ─────────────────────────────────────────────────────────
     // A campaign is either a parent (a folder grouping sub-campaigns) or a leaf
     // that actually sends. Parents own no leads, no template and no stats of
@@ -569,6 +580,8 @@ campaignSchema.statics.getTenantCampaignStats = async function (tenant = {}) {
   ['userId', 'organizationId'].forEach((key) => {
     if (tenant[key]) match[key] = new mongoose.Types.ObjectId(String(tenant[key]));
   });
+  // Inside a project, tenantFilter already built this with ObjectIds
+  if (tenant.projectInstanceId !== undefined) match.projectInstanceId = tenant.projectInstanceId;
 
   const stats = await this.aggregate([
     { $match: match },

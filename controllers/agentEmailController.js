@@ -5,7 +5,7 @@
 const XLSX = require('xlsx');
 const Conversation = require('../models/Conversation');
 const { buildDraftCampaign } = require('../services/agent/emailCampaignService');
-const { hasEmailAccess, buildBuyCard } = require('../services/agent/entitlements');
+const { hasEmailAccess, buildBuyCard, canBuildCampaigns, NOT_SELF_SERVE_MESSAGE } = require('../services/agent/entitlements');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 
 const isEmailLike = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
@@ -44,6 +44,12 @@ const uploadEmailRecipients = asyncHandler(async (req, res, next) => {
   const { conversationId } = req.body;
 
   if (!req.file) return next(new AppError('No file was uploaded.', 400));
+
+  // Building campaigns is the partner's / Karya team's job unless the
+  // business is self-serve.
+  if (!(await canBuildCampaigns(userId))) {
+    return res.status(403).json({ success: false, message: NOT_SELF_SERVE_MESSAGE });
+  }
 
   // Building a campaign is the paid action → require the email project.
   if (!(await hasEmailAccess(userId))) {

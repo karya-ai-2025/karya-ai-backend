@@ -19,6 +19,9 @@ const SEGMENT_STATUSES = {
 const { validateEmailBatch, getCachedValidations, validateAndCache, normalizeEmail } = require('../services/neverBounceService');
 const { BYPASS_PAYWALL } = require('../config/testingFlags');
 const { tenantFilter, tenantStamp, accountUserId, hasCapability } = require('../middleware/orgContext');
+const { audit } = require('../utils/audit');
+const { launchCampaign } = require('../services/campaignLaunch');
+const approvals = require('../services/approvals');
 
 // Map a NeverBounce "result" to the small enum we store on saved leads.
 const toVerificationStatus = (result = {}) => {
@@ -222,6 +225,10 @@ const createCampaign = async (req, res) => {
     });
 
     await campaign.save();
+    await audit(req, 'campaign.created', {
+      target: { type: 'Campaign', id: campaign._id },
+      summary: `${req.user.fullName} created the campaign "${campaign.name}"`,
+    });
 
     // Populate the campaign before sending response
     await campaign.populate('emailTemplateId', 'templateName subject');
@@ -673,10 +680,10 @@ const startCampaign = async (req, res) => {
       });
     }
 
-    // ── Role gate (enterprise only) ─────────────────────────────────────
-    // Starting spends the organization's credits. Admins and managers may;
-    // an employee may only start their own campaign once it has been
-    // approved. Individual accounts are never held here.
+    // ── Role gate ───────────────────────────────────────────────────────
+    // Starting spends the organization's credits. Whoever holds
+    // campaign.start may; anyone else only a campaign of theirs that has
+    // been approved.
     if (!hasCapability(req, 'campaign.start')) {
       const approved = campaign.approval && campaign.approval.status === 'approved';
       const isCreator = String(campaign.userId) === String(userId);
@@ -691,149 +698,24 @@ const startCampaign = async (req, res) => {
       }
     }
 
-    // ── ICP gate ────────────────────────────────────────────────────────
-    // The customer must have signed off on who we contact on their behalf.
-    // An admin can override for a customer who has gone quiet, by passing
-    // { overrideIcp: true } — recorded on the campaign so it is not silent.
-    const icp = await CampaignICP.findOne({ campaignId: campaign._id });
-    const overrideIcp = req.body && req.body.overrideIcp === true;
-
-    if (!icp) {
-      if (!(req.user.isAdmin && overrideIcp)) {
-        return res.status(409).json({
-          success: false,
-          code: 'ICP_MISSING',
-          message: 'This campaign has no ICP yet. An ICP must be created and approved before sending.'
-        });
-      }
-    } else if (icp.status !== 'approved') {
-      // The response window may have closed since the last sweep ran. Treat a
-      // passed deadline as approved here too, so a campaign is never blocked by
-      // a deadline that has already expired — and record the auto-approval.
-      if (CampaignICP.isPastDeadline(icp)) {
-        icp.status = 'approved';
-        icp.approvedAt = new Date();
-        icp.approvalSource = 'auto';
-        icp.autoApproveAt = undefined;
-        await icp.save();
-      } else if (!(req.user.isAdmin && overrideIcp)) {
-        const hoursLeft = icp.hoursUntilAutoApprove;
-        return res.status(409).json({
-          success: false,
-          code: 'ICP_NOT_APPROVED',
-          icpStatus: icp.status,
-          hoursUntilAutoApprove: hoursLeft,
-          message: icp.status === 'revision_requested'
-            ? 'The customer has requested changes to this ICP. Revise it and send it back for approval before sending.'
-            : `This campaign's ICP is awaiting customer approval. It will approve automatically in ${hoursLeft ?? '—'} hour(s) if they do not respond.`
-        });
-      }
-    }
-
-    if (overrideIcp && req.user.isAdmin) {
-      campaign.addError(
-        'Admin override: campaign started without an approved ICP (status: ' + (icp ? icp.status : 'none') + ')',
-        null,
-        'other'
-      );
-    }
-
-    // Count valid email leads
-    const validLeads = campaign.selectedLeads.filter(
-      (lead) => lead.email && lead.email.includes('@')
-    );
-    const creditsRequired = validLeads.length * (campaign.creditsPerEmail || 1);
-
-    // Find active plan and check credits
-    const userPlans = await UserPlan.findActiveByUser(accountUserId(req));
-    const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
-
-    // ── PAYWALL (parked for testing — see config/testingFlags.js) ────────
-    if (!BYPASS_PAYWALL) {
-      if (!userPlan) {
-        return res.status(402).json({
-          success: false,
-          message: 'No active plan found. Please subscribe to a plan to send campaigns.',
-          creditsRequired,
-          remainingCredits: 0
-        });
-      }
-
-      if (!userPlan.hasEnoughCredits(creditsRequired)) {
-        const remaining = Math.max(0, userPlan.totalCredits - userPlan.creditsUsed);
-        return res.status(402).json({
-          success: false,
-          message: `Insufficient credits. You need ${creditsRequired} credits to send to ${validLeads.length} leads, but you only have ${remaining} credits remaining.`,
-          creditsRequired,
-          remainingCredits: remaining,
-          leadsCount: validLeads.length
-        });
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────
-
-    // Reserve credits upfront in one write. Still done whenever a plan exists,
-    // so a funded account behaves identically to production — only the refusal
-    // above is skipped. With no plan at all there is nothing to deduct.
-    if (userPlan) {
-      userPlan.creditsUsed += creditsRequired;
-      await userPlan.save();
-    }
-
-    // Create a single consumption record for the reservation.
-    // Skipped when there is no plan to charge (only reachable while the
-    // paywall is parked) — the record is keyed to a plan, so without one
-    // there is nothing meaningful to write.
-    if (userPlan) {
-      await UserCreditConsumption.create({
-        userId: accountUserId(req),
-        actorUserId: userId,
-        ...tenantStamp(req),
-        userPlanId: userPlan._id,
-        actionType: 'SEND_CAMPAIGN_EMAIL',
-        creditsConsumed: creditsRequired,
-        leadId: `campaign_${campaign._id}`,
-        metadata: {
-          campaignId: campaign._id,
-          campaignName: campaign.name,
-          leadsCount: validLeads.length,
-          creditsPerEmail: campaign.creditsPerEmail || 1,
-          type: 'reserve'
-        }
-      });
-    }
-
-    // Update campaign and start
-    campaign.status = 'sending';
-    campaign.startedAt = new Date();
-    campaign.creditsReserved = creditsRequired;
-    await campaign.save();
-
-    // Fire-and-forget: process emails in the background
-    processCampaign(campaign._id).catch((err) => {
-      console.error(`Background campaign processing failed for ${campaign._id}:`, err);
-      Campaign.findByIdAndUpdate(campaign._id, {
-        status: 'failed',
-        $push: {
-          errorLogs: {
-            message: `Processing failed: ${err.message}`,
-            errorType: 'sending',
-            timestamp: new Date()
-          }
-        }
-      }).catch(console.error);
+    // Everything after the role gate — ICP check, credits, reserving them,
+    // sending — is the shared launch (services/campaignLaunch.js), the same
+    // one an approved launch request uses.
+    const overrideIcp = !!(req.body && req.body.overrideIcp === true && req.user.isAdmin);
+    const result = await launchCampaign(campaign, {
+      payingAccountId: accountUserId(req),
+      actorUserId: userId,
+      icpPolicy: overrideIcp ? 'override' : 'strict',
     });
-
-    const remainingAfterReserve = userPlan
-      ? Math.max(0, userPlan.totalCredits - userPlan.creditsUsed)
-      : 0;
+    const { ok, status, ...rest } = result;
+    if (!ok) return res.status(status).json({ success: false, ...rest });
 
     res.json({
       success: true,
       data: campaign,
-      message: `Campaign started — ${creditsRequired} credits reserved for ${validLeads.length} emails`,
-      creditsReserved: creditsRequired,
-      remainingCredits: remainingAfterReserve
+      message: rest.message,
+      creditsReserved: rest.creditsReserved,
+      remainingCredits: rest.remainingCredits
     });
   } catch (error) {
     console.error('Error starting campaign:', error);
@@ -1220,7 +1102,7 @@ const sendCampaignFollowUp = async (req, res) => {
 };
 
 // ============================================
-// APPROVAL (enterprise)
+// APPROVAL
 // An employee builds a campaign and asks; a manager or admin signs it off.
 // Individual accounts never need these — they can start directly.
 // ============================================
@@ -1250,6 +1132,21 @@ const submitCampaignForApproval = async (req, res) => {
       requestedAt: new Date()
     };
     await campaign.save();
+    await audit(req, 'campaign.submitted', {
+      target: { type: 'Campaign', id: campaign._id },
+      summary: `${req.user.fullName} sent "${campaign.name}" for approval`,
+    });
+    // The client's decision goes through the one approval system; approving
+    // launches it — but only if it's still exactly this campaign
+    await approvals.requestApproval(req, {
+      type: 'campaign_launch',
+      title: campaign.name,
+      description: `${(campaign.selectedLeads || []).length} recipients`,
+      target: { type: 'Campaign', id: campaign._id },
+      contentHash: await approvals.hashCampaign(campaign),
+      projectInstanceId: campaign.projectInstanceId || null,
+      quiet: true,
+    });
 
     res.json({ success: true, data: campaign, message: 'Campaign submitted for approval' });
   } catch (error) {
@@ -1258,29 +1155,44 @@ const submitCampaignForApproval = async (req, res) => {
   }
 };
 
-// Shared by approve and reject — the two differ only in the outcome recorded.
+// Shared by approve and reject. The decision goes through the one approval
+// system (services/approvals.js): approving launches the campaign from the
+// business's credits, as long as it hasn't changed since it was submitted.
 const decideCampaignApproval = (outcome) => async (req, res) => {
   try {
     const campaign = await Campaign.findOne({ _id: req.params.id, ...tenantFilter(req) });
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
-    if (!campaign.approval || campaign.approval.status !== 'pending') {
-      return res.status(400).json({ success: false, message: 'This campaign is not waiting for approval' });
+
+    let approval = await approvals.pendingFor('campaign_launch', campaign._id);
+    if (!approval) {
+      if (!campaign.approval || campaign.approval.status !== 'pending') {
+        return res.status(400).json({ success: false, message: 'This campaign is not waiting for approval' });
+      }
+      // Submitted before approvals existed: raise it now (no fingerprint to compare)
+      approval = await approvals.requestApproval(req, {
+        type: 'campaign_launch',
+        title: campaign.name,
+        target: { type: 'Campaign', id: campaign._id },
+        projectInstanceId: campaign.projectInstanceId || null,
+        quiet: true,
+      });
     }
 
-    campaign.approval.status = outcome;
-    campaign.approval.decidedBy = req.user._id;
-    campaign.approval.decidedAt = new Date();
-    campaign.approval.note = String((req.body && req.body.note) || '').trim().slice(0, 500);
-    await campaign.save();
+    const decided = await approvals.decide(req, approval, outcome === 'approved' ? 'approve' : 'reject', req.body && req.body.note);
+    const fresh = await Campaign.findById(campaign._id);
 
     res.json({
       success: true,
-      data: campaign,
-      message: outcome === 'approved' ? 'Campaign approved' : 'Campaign sent back for changes'
+      data: fresh,
+      launched: !!decided.outcome?.launched,
+      message: outcome === 'approved'
+        ? (decided.outcome?.message || 'Campaign approved')
+        : 'Campaign sent back for changes'
     });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error('Error deciding campaign approval:', error);
     res.status(500).json({ success: false, message: 'Failed to update campaign approval', error: error.message });
   }

@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const EmailTemplate = require('../models/EmailTemplate');
 const {
   assertUserOwnsAttachmentBlob,
@@ -428,18 +429,17 @@ const previewEmailTemplate = async (req, res) => {
 // @access  Private
 const getTemplateCategories = async (req, res) => {
   try {
-    const categories = await EmailTemplate.distinct('category', {
-      userId: req.user.id,
-      isActive: true
+    const tenant = tenantFilter(req);
+    const categories = await EmailTemplate.distinct('category', { ...tenant, isActive: true });
+
+    // Aggregations don't cast ids the way find() does
+    const match = { ...tenant, isActive: true };
+    ['userId', 'organizationId'].forEach((key) => {
+      if (match[key]) match[key] = new mongoose.Types.ObjectId(String(match[key]));
     });
 
     const categoriesWithCounts = await EmailTemplate.aggregate([
-      {
-        $match: {
-          userId: req.user.id,
-          isActive: true
-        }
-      },
+      { $match: match },
       {
         $group: {
           _id: '$category',

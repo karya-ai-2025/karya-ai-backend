@@ -6,6 +6,7 @@ const { config } = require('../config/config');
 const User = require('../models/User');
 const { AppError, asyncHandler } = require('./errorHandler');
 const { resolveOrgContext } = require('./orgContext');
+const { isBlockedExpert, moveOffExpertRole, expertFlowPausedError } = require('../config/featureFlags');
 
 /**
  * Protect routes - Verify JWT token
@@ -58,6 +59,13 @@ const protect = asyncHandler(async (req, res, next) => {
         new AppError('Password was recently changed. Please log in again.', 401)
       );
     }
+
+    // The token says which kind of account it was issued to. It must still
+    // be that account's kind — a token from before the kinds existed, or one
+    // that doesn't match, is sent back to log in.
+    if (decoded.kind !== user.kind) {
+      return next(new AppError('Your session has expired. Please log in again.', 401));
+    }
     
     // Attach user to request
     req.user = user;
@@ -67,8 +75,13 @@ const protect = asyncHandler(async (req, res, next) => {
     );
   }
 
-  // Enterprise accounts: work out which organization they act in and what
-  // their role allows. A no-op for individual accounts. Outside the try above
+  // Expert flow switched off: a session still signed in as an expert either
+  // moves back to its business side or, with none, is refused outright.
+  if (isBlockedExpert(req.user)) return next(expertFlowPausedError());
+  if (moveOffExpertRole(req.user)) await req.user.save({ validateBeforeSave: false });
+
+  // Work out which organization they act in and what their role allows.
+  // Outside the try above
   // so a withdrawn membership surfaces as its own 403, not "invalid token".
   await resolveOrgContext(req);
   next();
@@ -94,12 +107,13 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
       const decoded = jwt.verify(token, config.jwt.secret);
       const user = await User.findById(decoded.id);
       
-      if (user && user.isActive && !user.changedPasswordAfter(decoded.iat)) {
+      if (user && user.isActive && !user.changedPasswordAfter(decoded.iat)
+          && decoded.kind === user.kind && !isBlockedExpert(user)) {
         req.user = user;
         await resolveOrgContext(req);
       }
     } catch (error) {
-      // Token invalid, or an enterprise member whose access was withdrawn —
+      // Token invalid, or a member whose access was withdrawn —
       // either way they are treated as signed out for optional auth.
       req.user = undefined;
     }
@@ -107,6 +121,55 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
   
   next();
 });
+
+/**
+ * Read the token from the request, if there is one. Header first, then cookie.
+ */
+const tokenFrom = (req) => {
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    return req.headers.authorization.split(' ')[1];
+  }
+  return req.cookies && req.cookies.token;
+};
+
+const KIND_LABEL = { business: 'business', partner: 'partner', platform: 'Karya team' };
+
+/**
+ * Keep every other kind of account out of an API area. Mounted in front of a
+ * whole area in index.js:
+ *
+ *     app.use('/api/campaigns', kindGate('business'), campaignRoutes)
+ *
+ * It only reads the kind signed into the token, so it costs no database
+ * query; `protect` inside the area then checks that kind against the account
+ * itself. Requests with no token (or a broken one) pass through untouched, so
+ * the area's public routes keep working and `protect` gives its usual answer.
+ */
+const kindGate = (...kinds) => (req, res, next) => {
+  const token = tokenFrom(req);
+  if (!token) return next();
+
+  let decoded;
+  try {
+    decoded = jwt.verify(token, config.jwt.secret);
+  } catch {
+    return next();
+  }
+
+  if (!kinds.includes(decoded.kind)) {
+    const area = kinds.map((k) => KIND_LABEL[k] || k).join(' / ');
+    return next(new AppError(`This part of Karya is only for ${area} accounts.`, 403));
+  }
+  return next();
+};
+
+/** Same rule after `protect`, against the account itself. */
+const requireKind = (...kinds) => (req, res, next) => {
+  if (!req.user || !kinds.includes(req.user.kind)) {
+    return next(new AppError('Your account cannot use this part of Karya.', 403));
+  }
+  return next();
+};
 
 /**
  * Restrict access to specific roles.
@@ -161,6 +224,8 @@ const blockDemo = (req, res, next) => {
 
 module.exports = {
   protect,
+  kindGate,
+  requireKind,
   blockDemo,
   optionalAuth,
   restrictTo,

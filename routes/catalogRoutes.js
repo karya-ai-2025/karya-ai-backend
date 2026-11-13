@@ -6,7 +6,8 @@ const ProjectUser    = require('../models/ProjectUser');
 const { blockPurchases } = require('../middleware/purchaseGuard');
 const ExpertProfile = require('../models/ExpertProfile');
 const User = require('../models/User');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { EXPERT_FLOW_ENABLED, requireExpertFlow } = require('../config/featureFlags');
 const { accountUserId, requireCapability, tenantStamp } = require('../middleware/orgContext');
 
 const CATEGORY_MAP = {
@@ -150,11 +151,13 @@ router.get('/categories', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/catalog  (PROTECTED)
-// Any logged-in user can create a new catalog project + optional pricing tiers.
+// POST /api/catalog  (KARYA STAFF)
+// Creates a new catalog project + optional pricing tiers. The marketplace is
+// Karya's to curate, so this is staff-only (moves to the console later).
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/', [
   protect,
+  restrictTo('admin'),
   body('slug').isString().trim().notEmpty().withMessage('slug is required'),
   body('title').isString().trim().notEmpty().withMessage('title is required'),
   body('description').isString().trim().notEmpty().withMessage('description is required'),
@@ -212,6 +215,9 @@ router.get('/user/my-projects', protect, async (req, res) => {
       .lean();
 
     const projects = purchases.map(p => ({
+      // The project instance id: the workspace sends it as X-Karya-Project so
+      // its work is kept to this project (middleware/projectContext.js)
+      projectId:       p._id,
       slug:            p.projectSlug,
       title:           p.catalogId?.title   || p.projectSlug,
       tagline:         p.catalogId?.tagline || '',
@@ -235,7 +241,7 @@ router.get('/user/my-projects', protect, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/:slug/purchase', blockPurchases, [
   protect,
-  requireCapability('billing.manage'), // enterprise: only an admin buys for the company
+  requireCapability('billing.manage'), // only an admin buys for the company
   param('slug').isString().trim(),
   body('tierId').isIn(['credit', 'bronze', 'silver', 'gold']).withMessage('Invalid tierId'),
   handleValidationErrors,
@@ -276,6 +282,7 @@ router.post('/:slug/purchase', blockPurchases, [
       success: true,
       message: 'Purchase recorded',
       data: {
+        projectId:   purchase._id,
         slug:        catalog.slug,
         title:       catalog.title,
         tierId:      purchase.tierId,
@@ -327,6 +334,8 @@ router.get('/:slug/experts', [
   param('slug').isString().trim(),
   handleValidationErrors,
 ], async (req, res) => {
+  // Expert flow switched off: a project simply has no experts to show
+  if (!EXPERT_FLOW_ENABLED) return res.json({ success: true, data: { experts: [] } });
   try {
     const project = await ProjectCatalog.findOne({
       slug: req.params.slug,
@@ -373,6 +382,7 @@ router.get('/:slug/experts', [
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/:slug/experts', [
   protect,
+  requireExpertFlow,
   param('slug').isString().trim(),
   body('contribution').optional().isString().trim().isLength({ max: 200 }),
   body('portfolioItemId').optional().isString(),
@@ -423,6 +433,7 @@ router.post('/:slug/experts', [
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:slug/experts/:expertProfileId', [
   protect,
+  requireExpertFlow,
   param('slug').isString().trim(),
   param('expertProfileId').isString().trim(),
   handleValidationErrors,

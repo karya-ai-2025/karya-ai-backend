@@ -264,6 +264,44 @@ const escapeHtml = (value = '') => String(value)
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
+// Something in a project needs the client's decision
+const approvalRequestedTemplate = (businessName, typeLabel, title, description, link) => baseTemplate(`
+  <h1 style="color: #1a1a1a; margin-bottom: 20px;">${escapeHtml(typeLabel)}: needs your decision</h1>
+  <p>Hi${businessName ? ` ${escapeHtml(businessName)} team` : ''},</p>
+  <p><strong>${escapeHtml(title)}</strong> is waiting for your decision on Karya-AI.</p>
+  ${description ? `<p style="padding: 12px 16px; background: #f4f6f8; border-radius: 8px;">${escapeHtml(description)}</p>` : ''}
+  <div style="text-align: center;">
+    <a href="${link}" class="button">Review it</a>
+  </div>
+`);
+
+// The client decided on something a worker (or colleague) asked for
+const approvalDecidedTemplate = (typeLabel, title, status, note, outcome, link) => baseTemplate(`
+  <h1 style="color: #1a1a1a; margin-bottom: 20px;">${escapeHtml(typeLabel)}: ${status === 'approved' ? 'approved' : status === 'rejected' ? 'not approved' : 'changes requested'}</h1>
+  <p>The client has decided on <strong>${escapeHtml(title)}</strong>.</p>
+  ${note ? `<p style="padding: 12px 16px; background: #f4f6f8; border-radius: 8px;">${escapeHtml(note)}</p>` : ''}
+  ${outcome ? `<p>${escapeHtml(outcome)}</p>` : ''}
+  <div style="text-align: center;">
+    <a href="${link}" class="button">Open Karya</a>
+  </div>
+`);
+
+// A business inviting a worker (agency / third-party expert) to one project
+const projectInviteTemplate = (inviterName, businessName, projectTitle, message, joinUrl) => baseTemplate(`
+  <h1 style="color: #1a1a1a; margin-bottom: 20px;">${escapeHtml(businessName)} invited you to work on a project</h1>
+  <p>Hi,</p>
+  <p>${escapeHtml(inviterName)} from <strong>${escapeHtml(businessName)}</strong> has invited you to work on their project <strong>${escapeHtml(projectTitle)}</strong> on Karya-AI.</p>
+  ${message ? `<p style="padding: 12px 16px; background: #f4f6f8; border-radius: 8px;">${escapeHtml(message)}</p>` : ''}
+  <p>Open the invitation to see the project and accept or decline it. You'll sign in with your partner account, or create one.</p>
+  <div style="text-align: center;">
+    <a href="${joinUrl}" class="button">Open invitation</a>
+  </div>
+  <p>Or copy and paste this link in your browser:</p>
+  <p style="word-break: break-all; color: #8B5CF6; font-size: 14px;">${joinUrl}</p>
+  <p><strong>This invitation will expire in 7 days and works once.</strong></p>
+  <p>If you weren't expecting this, you can safely ignore this email.</p>
+`);
+
 const teamInviteTemplate = (inviterName, organizationName, role, inviteUrl) => baseTemplate(`
   <h1 style="color: #1a1a1a; margin-bottom: 20px;">You've been invited to join ${escapeHtml(organizationName)}</h1>
   <p>Hi,</p>
@@ -314,5 +352,8 @@ module.exports = {
     scheduleCallConfirmation: scheduleCallConfirmationTemplate,
     meetingReminder: meetingReminderTemplate,
     teamInvite: teamInviteTemplate,
+    projectInvite: projectInviteTemplate,
+    approvalRequested: approvalRequestedTemplate,
+    approvalDecided: approvalDecidedTemplate,
   },
 };

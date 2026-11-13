@@ -12,8 +12,11 @@ const { getUserLeads, getUserLeadsCount } = require('../controllers/userLeadsCon
 const { upload, importLeads } = require('../controllers/leadsImportController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
 const { buildLeadWhere, getFilterOptions } = require('../services/leadFilters');
-const { actorContextFor } = require('../middleware/orgContext');
-const { can } = require('../config/permissions');
+const { actorContextFor, requireCapability, hasCapability } = require('../middleware/orgContext');
+
+// Credit endpoints: the acting person is ALWAYS the signed-in user. These used
+// to take a userId from the request body/query/path, which let anyone read or
+// spend any account's credits; any userId still sent by a client is ignored.
 const router = express.Router();
 
 // Helper function to handle validation errors
@@ -41,14 +44,14 @@ const getUserFromRequest = (req) => {
  * Get leads that user has accessed/downloaded
  * @access Private
  */
-router.get('/user-leads', protect, getUserLeads);
+router.get('/user-leads', protect, requireCapability('leads.view'), getUserLeads);
 
 /**
  * GET /api/leads/user-leads/count
  * Get count of leads that user has accessed
  * @access Private
  */
-router.get('/user-leads/count', protect, getUserLeadsCount);
+router.get('/user-leads/count', protect, requireCapability('leads.view'), getUserLeadsCount);
 
 /**
  * POST /api/leads/import-healthcare
@@ -149,14 +152,13 @@ router.get('/credits/costs', async (req, res) => {
  * POST /api/credits/consume
  * Consume credits for a specific action
  */
-router.post('/credits/consume', [
+router.post('/credits/consume', protect, requireCapability('leads.search'), [
   body('actionType').isIn(['VIEW_EMAIL', 'VIEW_PHONE', 'DOWNLOAD_LEADS']).withMessage('Valid action type is required'),
   body('leadId').optional().isString().withMessage('Lead ID must be a string'),
   body('leadEmail').optional().isEmail().withMessage('Valid email is required when provided'),
   body('leadPhone').optional().isString().withMessage('Phone must be a string'),
   body('leadName').optional().isString().withMessage('Lead name must be a string'),
   body('leadCompany').optional().isString().withMessage('Lead company must be a string'),
-  body('userId').notEmpty().withMessage('User ID is required'), // Temporary - should come from auth middleware
   handleValidationErrors
 ], async (req, res) => {
   try {
@@ -166,14 +168,19 @@ router.post('/credits/consume', [
       leadEmail,
       leadPhone,
       leadName,
-      leadCompany,
-      userId: actorUserId // Temporary - should come from req.user
+      leadCompany
     } = req.body;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // Downloading takes leads out of the platform, which needs more than searching.
+    if (actionType === 'DOWNLOAD_LEADS' && !hasCapability(req, 'leads.export')) {
+      return res.status(403).json({ success: false, message: 'Your role does not allow exporting leads' });
+    }
+
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
-    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+    const { accountUserId: userId, organizationId } = await actorContextFor(actorUserId);
 
     console.log(`Processing credit consumption: ${actionType} for user ${userId}`);
 
@@ -270,16 +277,15 @@ router.post('/credits/consume', [
  * GET /api/credits/history
  * Get user's credit consumption history
  */
-router.get('/credits/history', [
-  query('userId').notEmpty().withMessage('User ID is required'), // Temporary - should come from auth middleware
+router.get('/credits/history', protect, requireCapability('billing.view'), [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { userId: actorUserId } = req.query;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
     const { accountUserId: userId } = await actorContextFor(actorUserId);
@@ -323,11 +329,12 @@ router.get('/credits/history', [
  * GET /api/credits/balance/:userId
  * Get user's current credit balance
  */
-router.get('/credits/balance/:userId', async (req, res) => {
+// The :userId in the path is kept for older clients and ignored.
+router.get('/credits/balance/:userId?', protect, requireCapability('billing.view'), async (req, res) => {
   try {
-    const { userId: actorUserId } = req.params;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
     const { accountUserId: userId } = await actorContextFor(actorUserId);
@@ -377,29 +384,22 @@ router.get('/credits/balance/:userId', async (req, res) => {
  * POST /api/credits/consume-enhanced
  * Enhanced credit consumption for leads download with format options
  */
-router.post('/credits/consume-enhanced', [
+router.post('/credits/consume-enhanced', protect, requireCapability('leads.export'), [
   body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
   body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
   body('leads').isArray().withMessage('Leads must be an array'),
   body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
-  body('userId').notEmpty().withMessage('User ID is required'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, downloadFormat, leads, totalCost, userId: actorUserId } = req.body;
+    const { actionType, downloadFormat, leads, totalCost } = req.body;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
-    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+    const { accountUserId: userId, organizationId } = await actorContextFor(actorUserId);
 
-    // Enterprise: taking leads out of the platform is for admins and managers.
-    if (membership && !can(membership, 'leads.export')) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role (${membership.role}) does not allow exporting leads`
-      });
-    }
 
     console.log(`Processing enhanced credit consumption: ${leads.length} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
 
@@ -499,28 +499,21 @@ router.post('/credits/consume-enhanced', [
  * POST /api/credits/consume-batch
  * Consume credits for downloading multiple leads (legacy support)
  */
-router.post('/credits/consume-batch', [
+router.post('/credits/consume-batch', protect, requireCapability('leads.export'), [
   body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
   body('leads').isArray().withMessage('Leads must be an array'),
   body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
-  body('userId').notEmpty().withMessage('User ID is required'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, leads, totalCost, userId: actorUserId } = req.body;
+    const { actionType, leads, totalCost } = req.body;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
-    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+    const { accountUserId: userId, organizationId } = await actorContextFor(actorUserId);
 
-    // Enterprise: taking leads out of the platform is for admins and managers.
-    if (membership && !can(membership, 'leads.export')) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role (${membership.role}) does not allow exporting leads`
-      });
-    }
 
     console.log(`Processing batch credit consumption: ${leads.length} leads for user ${userId}, cost: ${totalCost}`);
 
@@ -616,29 +609,22 @@ router.post('/credits/consume-batch', [
  * POST /api/credits/consume-bulk
  * Bulk credit consumption for large lead downloads
  */
-router.post('/credits/consume-bulk', [
+router.post('/credits/consume-bulk', protect, requireCapability('leads.export'), [
   body('actionType').equals('DOWNLOAD_LEADS').withMessage('Action type must be DOWNLOAD_LEADS'),
   body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
   body('downloadCount').isInt({ min: 1 }).withMessage('Download count must be a positive integer'),
   body('totalCost').isInt({ min: 0 }).withMessage('Total cost must be a non-negative integer'),
-  body('userId').notEmpty().withMessage('User ID is required'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { actionType, downloadFormat, downloadCount, totalCost, searchCriteria, userId: actorUserId } = req.body;
+    const { actionType, downloadFormat, downloadCount, totalCost, searchCriteria } = req.body;
+    const actorUserId = req.user._id;
 
-    // The id sent is whoever is acting. Credits come from their account's
+    // The signed-in user is whoever is acting. Credits come from their account's
     // pool — their own, or their organization's shared one — so from here on
     // `userId` is that account and `actorUserId` is the person.
-    const { accountUserId: userId, organizationId, membership } = await actorContextFor(actorUserId);
+    const { accountUserId: userId, organizationId } = await actorContextFor(actorUserId);
 
-    // Enterprise: taking leads out of the platform is for admins and managers.
-    if (membership && !can(membership, 'leads.export')) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role (${membership.role}) does not allow exporting leads`
-      });
-    }
 
     console.log(`Processing bulk credit consumption: ${downloadCount} leads for user ${userId}, format: ${downloadFormat}, cost: ${totalCost}`);
 
@@ -735,24 +721,18 @@ router.post('/credits/consume-bulk', [
  * POST /api/leads/generate-for-download
  * Generate leads specifically for download (can return more than display limit)
  */
-router.post('/generate-for-download', [
+router.post('/generate-for-download', protect, requireCapability('leads.export'), [
   body('industry').notEmpty().withMessage('Industry is required'),
   body('downloadCount').isInt({ min: 1 }).withMessage('Download count must be a positive integer'),
   body('downloadFormat').isIn(['email_only', 'email_phone']).withMessage('Download format must be email_only or email_phone'),
   handleValidationErrors
 ], async (req, res) => {
   try {
-    const { industry, company, companySegment, location, downloadCount, downloadFormat, userId } = req.body;
+    const { industry, company, companySegment, location, downloadCount, downloadFormat } = req.body;
+    const userId = req.user._id;
     console.log(`Generating ${downloadCount} leads for download: format=${downloadFormat}, user=${userId}`);
 
     // Enterprise: taking leads out of the platform is for admins and managers.
-    const { membership } = await actorContextFor(userId);
-    if (membership && !can(membership, 'leads.export')) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role (${membership.role}) does not allow exporting leads`
-      });
-    }
 
     // Build search filters (same as regular generate endpoint)
     const whereClause = {};
@@ -863,7 +843,8 @@ router.post('/generate-for-download', [
  * POST /api/credits/initialize
  * Initialize credit costs in the database (run once)
  */
-router.post('/credits/initialize', async (req, res) => {
+// Writes the platform's credit price list — Karya staff only.
+router.post('/credits/initialize', protect, restrictTo('admin'), async (req, res) => {
   try {
     console.log('Initializing credit costs...');
 
@@ -1227,7 +1208,7 @@ router.get('/segments', [
  * PostgreSQL mapping tables (tbl_regions, tbl_segments, tbl_seniority).
  * @access Private
  */
-router.post('/generate', protect, [
+router.post('/generate', protect, requireCapability('leads.search'), [
   body('industry').notEmpty().withMessage('Industry is required'),
   body('company').optional().isString(),
   body('companySegment').optional().isString(),

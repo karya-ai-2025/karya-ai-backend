@@ -161,21 +161,31 @@ const userSchema = new mongoose.Schema(
     // Admin access — independent of activeRole so normal platform usage is unaffected
     isAdmin: { type: Boolean, default: false },
 
-    // ── Account type ──────────────────────────────────────────────────────
-    // Chosen once at signup. An 'individual' account owns its data by userId
-    // and never touches the organization code. An 'enterprise' account
-    // belongs to exactly one Organization, and its role there (admin /
-    // manager / employee) decides what it may see and do.
-    accountType: {
+    // ── Account kind ──────────────────────────────────────────────────────
+    // Which side of Karya this account lives on. Set once when the account is
+    // created and never changed — a person who needs a second kind uses a
+    // second account.
+    //
+    //   business → a company that buys projects and approves work (2nd party)
+    //   partner  → an agency / service provider that does the work (3rd party)
+    //   platform → Karya's own team
+    //
+    // Each kind has its own app, its own API area and its own login token
+    // (the kind is signed into the token and re-checked on every request), so
+    // no flag on one kind of account can open another kind's area.
+    kind: {
       type: String,
       enum: {
-        values: ['individual', 'enterprise'],
-        message: 'Account type must be individual or enterprise'
+        values: ['business', 'partner', 'platform'],
+        message: 'Account kind must be business, partner or platform'
       },
-      default: 'individual'
+      default: 'business',
+      immutable: true,
+      index: true
     },
 
-    // The enterprise this account belongs to; null for individuals.
+    // The organization this account belongs to. Every business, partner and
+    // platform account belongs to exactly one, of the same type as its kind.
     //
     // A pointer for convenience, not the grant: the Membership row is what
     // actually gives access, and `protect` re-checks it on every request.
@@ -245,7 +255,10 @@ userSchema.methods.generateAuthToken = function () {
     {
       id: this._id,
       email: this.email,
-      role: this.activeRole
+      role: this.activeRole,
+      // Re-checked against the database by `protect`, and used by kindGate to
+      // keep a token out of every other kind's API area.
+      kind: this.kind
     },
     config.jwt.secret,
     { expiresIn: config.jwt.expire }

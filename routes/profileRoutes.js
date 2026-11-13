@@ -37,6 +37,11 @@ const { requireCapability } = require('../middleware/orgContext');
 // Individual accounts pass straight through.
 const manageCompany = requireCapability('org.manage');
 
+// Expert flow switched off (config/featureFlags.js): every expert route below
+// answers 403. Two prefixes, because '/expert' does not match '/experts/...'.
+const { requireExpertFlow } = require('../config/featureFlags');
+router.use(['/experts', '/expert'], requireExpertFlow);
+
 // ============================================
 // PUBLIC ROUTES - Expert Search & View
 // ============================================

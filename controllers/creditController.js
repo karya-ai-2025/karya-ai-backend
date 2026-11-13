@@ -1,8 +1,8 @@
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const UserPlan = require('../models/UserPlan');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
-// The account holding the plan and credits: the caller for an individual,
-// the organization's owning admin for an enterprise member (one shared pool).
+// The account holding the plan and credits: the organization's owning admin
+// (one shared pool for the whole team).
 const { accountUserId } = require('../middleware/orgContext');
 
 /**

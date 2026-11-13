@@ -28,6 +28,8 @@ const { AppError, asyncHandler } = require('../middleware/errorHandler');
 const { processCampaign } = require('../services/campaignProcessor');
 const { searchLeads } = require('../services/leadSearch');
 const { BYPASS_PAYWALL } = require('../config/testingFlags');
+const ProjectUser = require('../models/ProjectUser');
+const { accountUserIdFor } = require('../middleware/orgContext');
 const {
   uploadAttachmentBuffer,
   assertUserOwnsAttachmentBlob,
@@ -91,9 +93,34 @@ async function resolveTarget(targetUserId) {
   if (!targetUserId || !mongoose.Types.ObjectId.isValid(String(targetUserId))) {
     throw new AppError('A valid targetUserId is required', 400);
   }
-  const user = await User.findById(targetUserId).select('fullName email isAdmin').lean();
+  const user = await User.findById(targetUserId).select('fullName email isAdmin organizationId').lean();
   if (!user) throw new AppError('Customer not found', 404);
   return user;
+}
+
+/**
+ * What every record built for a customer must carry so the customer can see
+ * it: their company (businesses read their work through their organization)
+ * and, optionally, the project it belongs to.
+ *
+ * `projectInstanceId` is optional and must be one of the customer company's
+ * own purchased projects. Without one the record is unassigned, which the
+ * business still sees inside every one of its projects.
+ */
+async function customerStamp(user, projectInstanceId) {
+  const stamp = { organizationId: user.organizationId || undefined, projectInstanceId: null };
+  if (projectInstanceId) {
+    if (!mongoose.Types.ObjectId.isValid(String(projectInstanceId))) {
+      throw new AppError('Invalid project', 400);
+    }
+    const project = await ProjectUser.findOne({
+      _id: projectInstanceId,
+      userId: await accountUserIdFor(user._id),
+    }).select('_id').lean();
+    if (!project) throw new AppError('That project does not belong to this customer', 400);
+    stamp.projectInstanceId = project._id;
+  }
+  return stamp;
 }
 
 /**
@@ -324,6 +351,7 @@ const createCustomerTemplate = asyncHandler(async (req, res, next) => {
     subject: String(subject).trim(),
     emailBody: String(emailBody).trim(),
     userId: user._id, // the customer owns it
+    ...(await customerStamp(user, req.body.projectInstanceId)),
     templateType,
     category,
     tags: Array.isArray(tags) ? tags : [],
@@ -442,6 +470,7 @@ const createCustomerLeadList = asyncHandler(async (req, res, next) => {
 
   const list = await UserCRM.create({
     userId: user._id, // the customer owns it
+    ...(await customerStamp(user, req.body.projectInstanceId)),
     crmObjectName: String(name || '').trim() || `Admin list — ${new Date().toISOString().slice(0, 10)}`,
     source: 'manual',
     exportFormat,
@@ -590,6 +619,7 @@ async function resolveSequenceTemplates({ sequence, user, campaignName, adminId 
       templateName: `${campaignName} — ${STEP_LABEL[key]}`,
       description: `Written by an admin for ${user.email} while setting up "${campaignName}".`,
       userId: user._id, // the customer owns it
+      ...stamp,
       subject,
       emailBody: body,
       templateType: key === 'initial' ? 'campaign' : 'follow-up',
@@ -633,6 +663,8 @@ const createCampaignForCustomer = asyncHandler(async (req, res, next) => {
   } = req.body;
 
   const user = await resolveTarget(targetUserId);
+  // The customer's company (and project, if given) — so they can see what is built for them
+  const stamp = await customerStamp(user, req.body.projectInstanceId);
 
   if (!name || !String(name).trim()) {
     return next(new AppError('Campaign name is required', 400));
@@ -696,6 +728,7 @@ const createCampaignForCustomer = asyncHandler(async (req, res, next) => {
       name: campaignName,
       description: String(description).trim(),
       userId: user._id, // the customer's, always
+      ...stamp,
       emailTemplateId: initialTemplate._id,
       sequenceTemplates,
       selectedLeads: cleanLeads,

@@ -24,10 +24,23 @@ if (process.env.NODE_ENV === 'production') {
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
 
+// Account kinds: each API area belongs to one kind of account (business,
+// partner, platform). kindGate turns away a token of any other kind at the
+// door, before the area's own routes run. Login, organization/team management,
+// public content and webhooks are shared and carry no gate.
+const { kindGate } = require('./middleware/authMiddleware');
+const businessOnly = kindGate('business');
+const partnerOnly = kindGate('partner');
+// The project-work areas: a business, or a worker (agency / expert) inside a
+// client's project — projectContext then holds the worker to that one project.
+const projectWork = kindGate('business', 'partner');
+
 // Routes
 const authRoutes = require('./routes/authRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const onboardingRoutes = require('./routes/onboardingRoutes'); // Business onboarding
+// Expert flow — switched off by EXPERT_FLOW_ENABLED (see config/featureFlags.js)
+const { EXPERT_FLOW_ENABLED, requireExpertFlow } = require('./config/featureFlags');
 const expertOnboardingRoutes=require('./routes/Expertonboardingroutes')
 const marketplaceRoutes=require('./routes/Marketplaceroutes')
 // projectRoutes removed — Project collection replaced by ProjectCatalog
@@ -120,7 +133,8 @@ app.use(cors({
   origin: (origin, cb) => (isAllowedOrigin(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'))),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id']
+  // x-karya-project: which purchased project a workspace call is for (middleware/projectContext.js)
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-karya-project']
 }));
 
 // Rate limiting
@@ -205,42 +219,52 @@ app.get('/', (req, res) => {
 
 // API Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/profiles', profileRoutes);
-app.use('/api/onboarding', onboardingRoutes);
-app.use('/api/expert-onboarding',expertOnboardingRoutes)
-app.use('/api/marketplace',marketplaceRoutes)
+app.use('/api/profiles', businessOnly, profileRoutes);
+app.use('/api/onboarding', businessOnly, onboardingRoutes);
+// Expert flow: mounted only while EXPERT_FLOW_ENABLED; otherwise every call gets a clear 403.
+if (EXPERT_FLOW_ENABLED) {
+  app.use('/api/expert-onboarding',expertOnboardingRoutes)
+  app.use('/api/marketplace',marketplaceRoutes)
+  app.use('/api/expert-interview', require('./routes/expertInterviewRoutes')); // ElevenLabs voice interview after expert onboarding
+} else {
+  app.use(['/api/expert-onboarding', '/api/marketplace', '/api/expert-interview'], requireExpertFlow);
+}
 // /api/projects removed — Project collection replaced by ProjectCatalog
 app.use('/api/industries', industriesRoutes); // PostgreSQL industries endpoint
-app.use('/api/leads', leadsRoutes); // Lead generation and management
-app.use('/api/catalog', catalogRoutes); // Project catalog & pricing tiers
-app.use('/api/submissions', submissionRoutes); // Project brief submissions
+app.use('/api/leads', businessOnly, leadsRoutes); // Lead generation and management
+app.use('/api/catalog', businessOnly, catalogRoutes); // Project catalog & pricing tiers
+app.use('/api/submissions', businessOnly, submissionRoutes); // Project brief submissions
 app.use('/api/webhooks', webhookRoutes); // Mailgun webhook events (no auth)
-app.use('/api/payments', paymentRoutes); // Payment gateway order creation and verification
-app.use('/api/credits', creditRoutes); // Credit consumption tracking
-app.use('/api/campaigns', campaignRoutes); // Email campaigns
-app.use('/api/email-templates', emailTemplateRoutes); // Email templates
-app.use('/api/user-crm', userCrmRoutes); // Saved CRM lead lists
-app.use('/api/conversations', conversationRoutes); // Agent conversation history
-app.use('/api/agent', agentRoutes); // Five-phase agent workflow
-app.use('/api/hitl', hitlRoutes); // Human-in-the-loop approval requests
-app.use('/api/icp', icpRoutes); // Campaign ICPs (customer view + admin authoring)
+app.use('/api/payments', businessOnly, paymentRoutes); // Payment gateway order creation and verification
+app.use('/api/credits', businessOnly, creditRoutes); // Credit consumption tracking
+app.use('/api/campaigns', projectWork, campaignRoutes); // Email campaigns
+app.use('/api/email-templates', projectWork, emailTemplateRoutes); // Email templates
+app.use('/api/user-crm', projectWork, userCrmRoutes); // Saved CRM lead lists
+app.use('/api/conversations', businessOnly, conversationRoutes); // Agent conversation history
+app.use('/api/agent', businessOnly, agentRoutes); // Five-phase agent workflow
+app.use('/api/hitl', businessOnly, hitlRoutes); // Human-in-the-loop approval requests
+app.use('/api/icp', projectWork, icpRoutes); // Campaign ICPs (customer view + admin authoring)
 app.use('/api/support', supportRoutes); // Support contact emails + update subscriptions
 app.use('/api/analytics', analytics.trackRoutes); // Product analytics ingestion (page views + events)
-app.use('/api/negotiations', negotiationRoutes); // Project deliverable negotiations
+app.use('/api/negotiations', businessOnly, negotiationRoutes); // Project deliverable negotiations
 app.use('/api/resources',        resourceRoutes);        // Resource hub
-app.use('/api/content-projects', contentProjectRoutes);  // Content Project (LinkedIn + Newsletter)
-app.use('/api/scheduling',  schedulingRoutes);  // Onboarding call scheduling (Cal.com)
-app.use('/api/organizations', organizationRoutes); // Enterprise org, members and invitations (public invite lookup)
-app.use('/api/transcripts', transcriptRoutes); // Call transcript pipeline (admin)
-app.use('/api/expert-interview', require('./routes/expertInterviewRoutes')); // ElevenLabs voice interview after expert onboarding
-app.use('/api/admin/analytics', analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
-app.use('/api/admin/infrastructure', infraRoutes); // Infrastructure dashboard (before /api/admin)
-app.use('/api/admin/campaigns', adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
-app.use('/api/admin',       adminRoutes);       // Admin analytics & management
+app.use('/api/content-projects', businessOnly, contentProjectRoutes);  // Content Project (LinkedIn + Newsletter)
+app.use('/api/scheduling',  businessOnly, schedulingRoutes);  // Onboarding call scheduling (Cal.com)
+app.use('/api/projects/:projectId', projectWork, require('./routes/projectWorkspaceRoutes'));
+app.use('/api/approvals/:approvalId', projectWork, require('./routes/approvalRoutes')); // One approval request (decide / comment / withdraw)
+app.use('/api/attention', projectWork, require('./routes/attentionRoutes')); // Attention Center (business / partner) // Shared project workspace (business + its workers)
+app.use('/api/engagements', businessOnly, require('./routes/engagementRoutes')); // Business brings a worker into a project
+app.use('/api/partner', partnerOnly, require('./routes/partnerRoutes')); // Partner (agency) app
+app.use('/api/organizations', organizationRoutes); // Organization, members and invitations — every kind (public invite lookup)
+app.use('/api/transcripts', businessOnly, transcriptRoutes); // Call transcript pipeline (admin)
+app.use('/api/admin/analytics', businessOnly, analytics.adminRoutes); // Product analytics dashboard (before adminRoutes; legacy /analytics/users + /azure fall through to adminRoutes)
+app.use('/api/admin/infrastructure', businessOnly, infraRoutes); // Infrastructure dashboard (before /api/admin)
+app.use('/api/admin/campaigns', businessOnly, adminCampaignRoutes); // Admin-on-behalf campaigns (before /api/admin)
+app.use('/api/admin',       businessOnly, adminRoutes);       // Admin analytics & management (legacy isAdmin staff, until the Karya console)
 app.use('/api/jobs', jobRoutes); // Job marketplace (acerstone)
 // Keep last: planRoutes is mounted on bare /api and applies `protect` to everything
 // after its public routes, so any router mounted below it would require a login.
-app.use('/api', planRoutes); // Plan and pricing management
+app.use('/api', businessOnly, planRoutes); // Plan and pricing management
 
 
 // Future routes (placeholders)

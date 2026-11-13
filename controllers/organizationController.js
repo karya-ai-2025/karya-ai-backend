@@ -1,10 +1,9 @@
 // controllers/organizationController.js
 //
-// An enterprise organization and the people in it: who belongs, in what
-// role, and bringing new people in.
+// An organization (business, partner or platform) and the people in it: who
+// belongs, in what role, and bringing new people in.
 //
-// Every route here sits behind requireOrg, so individual accounts never
-// reach this file. The organization always comes from the caller's own
+// Every route here sits behind requireOrg. The organization always comes from the caller's own
 // membership (req.organizationId) — never from a path or body parameter.
 
 const mongoose = require('mongoose');
@@ -152,7 +151,7 @@ const inviteMember = asyncHandler(async (req, res, next) => {
   }
 
   // One account belongs to one organization, so an address that already has
-  // a Karya-AI account — in this company or as an individual — cannot be
+  // a Karya-AI account — in this company or any other — cannot be
   // invited. The message is the same for both so it does not reveal which.
   if (await User.exists({ email })) {
     return next(new AppError('This email already has a Karya-AI account and cannot be invited', 400));
@@ -333,7 +332,7 @@ const lookupInvite = asyncHandler(async (req, res, next) => {
   }
 
   const [organization, inviter] = await Promise.all([
-    Organization.findById(invite.organizationId).select('name status').lean(),
+    Organization.findById(invite.organizationId).select('name type status').lean(),
     invite.invitedBy ? User.findById(invite.invitedBy).select('fullName').lean() : null,
   ]);
   if (!organization || organization.status !== 'active') {
@@ -346,6 +345,7 @@ const lookupInvite = asyncHandler(async (req, res, next) => {
       email: invite.inviteEmail,
       role: invite.role,
       organizationName: organization.name,
+      organizationType: organization.type,
       invitedBy: inviter ? inviter.fullName : null,
       expiresAt: invite.inviteExpires,
     },

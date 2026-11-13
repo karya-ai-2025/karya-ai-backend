@@ -1,6 +1,8 @@
 const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const { protect } = require('../middleware/authMiddleware');
+const { requireCapability } = require('../middleware/orgContext');
+const { projectContext } = require('../middleware/projectContext');
 const {
   getUserCrmObjects,
   getUserCrmObject,
@@ -23,7 +25,14 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-router.use(protect);
+router.use(protect, projectContext);   // which project, if any
+
+// Saved lead lists: reading needs leads.view, keeping or changing a list needs
+// leads.save. Both are part of a business's "get leads" side, so a business
+// holds them without self-serve.
+const viewLeads = requireCapability('leads.view');
+const saveLeads = requireCapability('leads.save');
+router.use((req, res, next) => (req.method === 'GET' ? viewLeads : saveLeads)(req, res, next));
 
 router
   .route('/')

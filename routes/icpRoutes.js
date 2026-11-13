@@ -10,11 +10,14 @@ const {
   adminArchiveICP,
 } = require('../controllers/icpController');
 const { protect, restrictTo } = require('../middleware/authMiddleware');
+const { projectContext } = require('../middleware/projectContext');
+const { requireCapability } = require('../middleware/orgContext');
 
 const router = express.Router();
 
-// Everything here requires a signed-in user.
-router.use(protect);
+// Everything here requires a signed-in user; customer calls made inside a
+// project are limited to it (middleware/projectContext.js).
+router.use(protect, projectContext);
 
 // ── Admin routes ──────────────────────────────────────────────────────────────
 // Declared BEFORE /:campaignId so "admin" is never parsed as a campaign id.
@@ -30,13 +33,13 @@ router.delete('/admin/:campaignId', restrictTo('admin'), adminArchiveICP);
  * @route GET /api/icp
  * @desc  Every ICP for the signed-in customer's own campaigns
  */
-router.get('/', listMyICPs);
+router.get('/', requireCapability('icp.view'), listMyICPs);
 
 /**
  * @route GET /api/icp/:campaignId
  * @desc  The ICP for one of the customer's own campaigns
  */
-router.get('/:campaignId', getICPForCampaign);
+router.get('/:campaignId', requireCapability('icp.view'), getICPForCampaign);
 
 /**
  * @route PATCH /api/icp/:campaignId/review

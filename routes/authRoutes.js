@@ -7,6 +7,7 @@ const router = express.Router();
 // Controllers
 const {
   register,
+  registerPartner,
   login,
   demoLogin,
   logout,
@@ -41,6 +42,7 @@ const {
 // Validators
 const {
   registerValidation,
+  registerPartnerValidation,
   loginValidation,
   forgotPasswordValidation,
   resetPasswordValidation,
@@ -61,6 +63,15 @@ router.post(
   registerValidation,
   validateRequest,
   register
+);
+
+// Register an agency / service provider (partner account)
+router.post(
+  '/register/partner',
+  registrationLimiter,
+  registerPartnerValidation,
+  validateRequest,
+  registerPartner
 );
 
 // Login

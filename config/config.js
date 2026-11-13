@@ -1,7 +1,12 @@
 const dotenv = require('dotenv');
 const path = require('path');
 
-dotenv.config({ path: path.resolve(__dirname, '..', '.env'), override: true });
+// ENV_FILE picks a different env file — e.g. `ENV_FILE=.env.local npm run dev`
+// to run against a local database instead of the one in .env.
+const envFile = process.env.ENV_FILE
+  ? path.resolve(__dirname, '..', process.env.ENV_FILE)
+  : path.resolve(__dirname, '..', '.env');
+dotenv.config({ path: envFile, override: true });
 
 const parseOptionalInt = (value) => {
   if (value === undefined || value === '') return undefined;

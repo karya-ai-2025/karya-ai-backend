@@ -20,10 +20,9 @@ const {
 const { protect } = require('../middleware/authMiddleware');
 const { requireCapability } = require('../middleware/orgContext');
 
-// Business onboarding writes to the company profile. In an enterprise that
-// profile is shared, so only those who manage the organization may change
-// it; invited members join an already-onboarded company. Individual accounts
-// pass straight through.
+// Business onboarding writes to the company profile. That profile is shared
+// by the whole team, so only those who manage the organization may change
+// it; invited members join an already-onboarded company.
 const manageCompany = requireCapability('org.manage');
 
 // All onboarding routes are protected

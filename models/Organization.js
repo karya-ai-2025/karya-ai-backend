@@ -1,11 +1,12 @@
 // models/Organization.js
 //
-// The company behind an enterprise account. This is what lets several people
-// share campaigns, templates, lead lists, one plan and one credit pool, and
-// keep that work when someone leaves.
+// The company behind every account: a business (buys projects, approves
+// work), a partner agency (does the work) or Karya itself (platform). This is
+// what lets several people share one plan, one credit pool and the company's
+// work, and keep that work when someone leaves.
 //
-// Only enterprise signups create one. Individual accounts have no
-// organization at all and keep owning their data by userId.
+// Every signup creates one or joins one by invitation; there are no accounts
+// without an organization.
 //
 // Who belongs to it, and in what role, lives in Membership.
 
@@ -29,6 +30,41 @@ const organizationSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
       index: true,
+    },
+
+    // Which side of Karya this organization is on — always the same as its
+    // members' account kind. Fixed at creation.
+    //   business → buys projects, approves work, pays
+    //   partner  → agency / service provider doing the work
+    //   platform → Karya's own team
+    type: {
+      type: String,
+      enum: ['business', 'partner', 'platform'],
+      required: true,
+      immutable: true,
+      index: true,
+    },
+
+    // ── Partner profile ─────────────────────────────────────────────────
+    // What an agency tells businesses about itself. Only used when type is
+    // 'partner'. `verified` is Karya's to set (from the console), never the
+    // partner's own.
+    profile: {
+      tagline: { type: String, trim: true, maxlength: 140 },
+      description: { type: String, trim: true, maxlength: 2000 },
+      website: { type: String, trim: true, maxlength: 200 },
+      location: { type: String, trim: true, maxlength: 120 },
+      teamSize: { type: String, enum: ['1', '2-10', '11-50', '51-200', '200+'] },
+      services: [{ type: String, trim: true, maxlength: 60 }],
+      verified: { type: Boolean, default: false },
+      completedAt: { type: Date },   // set once the required fields are filled
+    },
+
+    settings: {
+      // A business normally doesn't build campaigns itself — a partner or the
+      // Karya team does, and the business reviews and approves. Karya can turn
+      // this on for a business that should build its own campaigns too.
+      selfServe: { type: Boolean, default: false },
     },
 
     // ── The owning account ──────────────────────────────────────────────

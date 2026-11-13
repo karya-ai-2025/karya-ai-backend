@@ -206,6 +206,10 @@ const adminCreateICP = asyncHandler(async (req, res, next) => {
   const icp = await CampaignICP.create({
     campaignId: campaign._id,
     userId: campaign.userId, // inherited, never taken from the request
+    // Company and project come from the campaign too, so the customer (who
+    // reads through their organization, inside a project) can see it
+    organizationId: campaign.organizationId,
+    projectInstanceId: campaign.projectInstanceId || null,
     name: String(name).trim(),
     summary: String(summary).trim(),
     filters: normaliseFilters(filters),

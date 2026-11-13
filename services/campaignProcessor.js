@@ -2,7 +2,13 @@ const Campaign = require('../models/Campaign');
 const CampaignEmail = require('../models/CampaignEmail');
 const EmailTemplate = require('../models/EmailTemplate');
 const UserPlan = require('../models/UserPlan');
-const { accountUserIdFor } = require('../middleware/orgContext');
+const { accountUserIdFor, accountUserIdForOrg } = require('../middleware/orgContext');
+
+// The account whose credits a campaign uses: the company that owns it, not
+// whoever built it — a campaign built by a client's agency or by Karya staff
+// is still paid from the client's pool.
+const payingAccountFor = async (campaign) =>
+  (await accountUserIdForOrg(campaign.organizationId)) || accountUserIdFor(campaign.userId);
 const UserCreditConsumption = require('../models/UserCreditConsumption');
 const { sendEmail } = require('./mailgunService');
 const { downloadAttachmentBuffer, uploadAttachmentBuffer } = require('./blobStorageService');
@@ -56,9 +62,8 @@ const refundUnusedCredits = async (campaignId) => {
 
   if (refundAmount <= 0) return;
 
-  // Refund the pool the reservation came from: the creator's own plan, or
-  // their organization's shared one.
-  const accountId = await accountUserIdFor(campaign.userId);
+  // Refund the pool the reservation came from: the owning company's.
+  const accountId = await payingAccountFor(campaign);
   const userPlans = await UserPlan.findActiveByUser(accountId);
   const userPlan = userPlans && userPlans.length > 0 ? userPlans[0] : null;
   if (!userPlan) return;
@@ -405,7 +410,7 @@ const sendCampaignRound = async ({ campaignId, recipients = [], template, emailT
   // Charge only for follow-up emails actually sent.
   if (sentCount > 0) {
     try {
-      const accountId = await accountUserIdFor(campaign.userId);
+      const accountId = await payingAccountFor(campaign);
       const plans = await UserPlan.findActiveByUser(accountId);
       const plan = plans && plans.length ? plans[0] : null;
       if (plan) {

@@ -91,6 +91,17 @@ const userCrmSchema = new mongoose.Schema(
       ref: 'Organization',
       index: true
     },
+
+    // The purchased project (ProjectUser) this belongs to. Set from the
+    // project the request was made in — see middleware/projectContext.js. A
+    // partner working on a business's project only ever sees records carrying
+    // that project's id. Null for records made outside any project.
+    projectInstanceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProjectUser',
+      default: null,
+      index: true
+    },
     crmObjectName: {
       type: String,
       required: [true, 'CRM object name is required'],
