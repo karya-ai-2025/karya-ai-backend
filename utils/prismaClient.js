@@ -1,14 +1,58 @@
 // Global Prisma Client Singleton
 // ONE instance for the entire application - Production Safe
 // Usage: const { prisma } = require('../utils/prismaClient');
+//
+// POSTGRES_ENABLED switch (in .env):
+//   POSTGRES_ENABLED=false  -> never connect to PostgreSQL. Every query fails
+//                              fast with a 503 "temporarily unavailable" error
+//                              instead of hanging on a connection timeout, and
+//                              the rest of the app (MongoDB) keeps working.
+//   unset or true           -> normal behaviour.
 
 const { PrismaClient } = require('@prisma/client');
+
+const POSTGRES_ENABLED =
+  String(process.env.POSTGRES_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+
+const postgresDisabledError = () => {
+  const err = new Error(
+    'Lead data is temporarily unavailable. Please try again later.'
+  );
+  err.statusCode = 503;
+  err.status = 'error';
+  err.isOperational = true;
+  err.code = 'POSTGRES_DISABLED';
+  return err;
+};
+
+// Stand-in client used while PostgreSQL is switched off. Any property chain
+// (prisma.tbl_x.findMany, prisma.$queryRawUnsafe, prisma.$transaction, ...)
+// resolves to a function that returns a rejected promise.
+const createDisabledClient = () => {
+  const handler = {
+    get(_target, prop) {
+      if (prop === 'then') return undefined; // not a thenable
+      if (prop === '$disconnect' || prop === '$connect') return async () => {};
+      return new Proxy(function () {}, handler);
+    },
+    apply() {
+      return Promise.reject(postgresDisabledError());
+    },
+  };
+  return new Proxy(function () {}, handler);
+};
 
 // Singleton pattern - Only ONE instance across the entire app
 let prisma;
 
 const createPrismaClient = () => {
   if (prisma) {
+    return prisma;
+  }
+
+  if (!POSTGRES_ENABLED) {
+    prisma = createDisabledClient();
+    console.warn('⏸️  PostgreSQL is DISABLED (POSTGRES_ENABLED=false) - lead features are switched off');
     return prisma;
   }
 
@@ -54,8 +98,14 @@ module.exports = {
   // Main singleton client
   prisma,
 
+  // True when PostgreSQL is switched on (POSTGRES_ENABLED is not "false")
+  POSTGRES_ENABLED,
+
   // Connection test function
   testConnection: async () => {
+    if (!POSTGRES_ENABLED) {
+      return { connected: false, disabled: true, message: 'PostgreSQL disabled via POSTGRES_ENABLED=false' };
+    }
     try {
       await prisma.$connect();
       const healthcareCount = await prisma.tbl_healthcare.count();
